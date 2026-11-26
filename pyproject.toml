@@ -46,6 +46,9 @@ dev = [
 [project.scripts]
 cacherift = "cacherift.cli:main"
 
+[project.entry-points."pytest11"]
+cacherift = "cacherift.check.pytest_plugin"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

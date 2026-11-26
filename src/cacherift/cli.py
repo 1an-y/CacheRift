@@ -56,6 +56,7 @@ class SubcommandModule(Protocol):
 _SUBCOMMAND_MODULES: tuple[str, ...] = (
     "cacherift.probe.cli",
     "cacherift.proxy.cli",
+    "cacherift.check.cli",
 )
 
 
