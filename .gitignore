@@ -1,0 +1,23 @@
+# Python & virtual environments
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+
+# Packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local captures & scratch
+*.local.jsonl
+.DS_Store

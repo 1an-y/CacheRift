@@ -1,0 +1,53 @@
+# Versioned static pricing tables (USD per 1M tokens).
+# Explicitly versioned; never treat as billing invoices.
+
+[[tables]]
+pricing_table_id = "default-2026-11"
+source_version = "public-list-prices-2026-11"
+
+[[tables.rules]]
+provider = "openai"
+model_pattern = "gpt-6.1*"
+uncached_input_per_1m = 2.50
+cache_read_per_1m = 0.25
+output_per_1m = 10.00
+
+[[tables.rules]]
+provider = "openai"
+model_pattern = "gpt-6.2*"
+uncached_input_per_1m = 2.50
+cache_read_per_1m = 0.25
+output_per_1m = 10.00
+
+[[tables.rules]]
+provider = "anthropic"
+model_pattern = "claude-sonnet-4*"
+uncached_input_per_1m = 3.00
+cache_read_per_1m = 0.30
+output_per_1m = 15.00
+[tables.rules.write_per_1m]
+default = 3.75
+"5m" = 3.75
+"1h" = 6.00
+
+[[tables.rules]]
+provider = "anthropic"
+model_pattern = "claude-opus-4*"
+uncached_input_per_1m = 15.00
+cache_read_per_1m = 1.50
+output_per_1m = 75.00
+[tables.rules.write_per_1m]
+default = 18.75
+"5m" = 18.75
+"1h" = 30.00
+
+[[tables.rules]]
+provider = "anthropic"
+model_pattern = "claude-haiku-4*"
+uncached_input_per_1m = 0.80
+cache_read_per_1m = 0.08
+output_per_1m = 4.00
+[tables.rules.write_per_1m]
+default = 1.00
+"5m" = 1.00
+"1h" = 1.60

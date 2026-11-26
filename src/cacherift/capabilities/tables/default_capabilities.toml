@@ -1,0 +1,115 @@
+# Versioned capability metadata (not a fallback heuristic).
+# Unregistered (dialect, provider, model, gateway_profile) combinations return unknown/None.
+
+[[capabilities]]
+dialect = "openai_responses"
+provider = "openai"
+model_pattern = "gpt-6.2*"
+gateway_profile = "*"
+min_cache_tokens = 1024
+ttl_semantics = "best_effort_5_10m_or_24h_retention"
+ttl_seconds_hint = 300
+prefix_order_note = "GPT-6.2 Responses: tools -> input -> instructions (top-level instructions are not cached across turns)"
+support_level = "full"
+source_version = "openai-docs-2026-11"
+unit_order = ["tools", "input", "instructions"]
+
+[[capabilities]]
+dialect = "openai_responses"
+provider = "openai"
+model_pattern = "gpt-6.1*"
+gateway_profile = "*"
+min_cache_tokens = 1024
+ttl_semantics = "best_effort_5_10m_or_24h_retention"
+ttl_seconds_hint = 300
+prefix_order_note = "tools -> instructions -> input"
+support_level = "full"
+source_version = "openai-docs-2026-11"
+unit_order = ["tools", "instructions", "input"]
+
+[[capabilities]]
+dialect = "openai_responses"
+provider = "openai"
+model_pattern = "gpt-5*"
+gateway_profile = "*"
+min_cache_tokens = 1024
+ttl_semantics = "best_effort_5_10m_or_24h_retention"
+ttl_seconds_hint = 300
+prefix_order_note = "tools -> instructions -> input"
+support_level = "full"
+source_version = "openai-docs-2026-11"
+unit_order = ["tools", "instructions", "input"]
+
+[[capabilities]]
+dialect = "anthropic_messages"
+provider = "anthropic"
+model_pattern = "claude-sonnet-4*"
+gateway_profile = "*"
+min_cache_tokens = 1024
+ttl_semantics = "ephemeral_5m_or_1h"
+ttl_seconds_hint = 300
+prefix_order_note = "tools -> system -> messages"
+support_level = "full"
+source_version = "anthropic-docs-2026-11"
+unit_order = ["tools", "system", "messages"]
+
+[[capabilities]]
+dialect = "anthropic_messages"
+provider = "anthropic"
+model_pattern = "claude-opus-4*"
+gateway_profile = "*"
+min_cache_tokens = 1024
+ttl_semantics = "ephemeral_5m_or_1h"
+ttl_seconds_hint = 300
+prefix_order_note = "tools -> system -> messages"
+support_level = "full"
+source_version = "anthropic-docs-2026-11"
+unit_order = ["tools", "system", "messages"]
+
+[[capabilities]]
+dialect = "anthropic_messages"
+provider = "anthropic"
+model_pattern = "claude-haiku-4*"
+gateway_profile = "*"
+min_cache_tokens = 2048
+ttl_semantics = "ephemeral_5m_or_1h"
+ttl_seconds_hint = 300
+prefix_order_note = "tools -> system -> messages"
+support_level = "full"
+source_version = "anthropic-docs-2026-11"
+unit_order = ["tools", "system", "messages"]
+
+[[capabilities]]
+dialect = "openai_chat"
+provider = "openai"
+model_pattern = "gpt-4*"
+gateway_profile = "*"
+min_cache_tokens = 1024
+ttl_semantics = "best_effort_5_10m"
+ttl_seconds_hint = 300
+prefix_order_note = "usage_only: tools -> messages"
+support_level = "usage_only"
+source_version = "openai-docs-2026-11"
+unit_order = ["tools", "messages"]
+
+[[capabilities]]
+dialect = "deepseek_chat"
+provider = "deepseek"
+model_pattern = "deepseek-*"
+gateway_profile = "*"
+ttl_semantics = "automatic_disk_kv_cache"
+prefix_order_note = "usage_only: deepseek prompt_cache_hit/miss_tokens"
+support_level = "usage_only"
+source_version = "deepseek-docs-2026-11"
+unit_order = ["tools", "messages"]
+
+[[capabilities]]
+dialect = "gemini_generate_content"
+provider = "gemini"
+model_pattern = "gemini-2.5*"
+gateway_profile = "*"
+ttl_semantics = "implicit_or_cached_content"
+prefix_order_note = "usage_only: gemini usageMetadata"
+support_level = "usage_only"
+source_version = "gemini-docs-2026-11"
+unit_order = ["tools", "system_instruction", "contents"]
