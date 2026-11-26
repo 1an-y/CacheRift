@@ -55,6 +55,7 @@ class SubcommandModule(Protocol):
 # Imported lazily by main() so `cacherift --help` never requires an optional extra.
 _SUBCOMMAND_MODULES: tuple[str, ...] = (
     "cacherift.probe.cli",
+    "cacherift.proxy.cli",
 )
 
 
