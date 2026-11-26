@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from cacherift.core.models import (
     CandidateCause,
@@ -10,10 +10,12 @@ from cacherift.core.models import (
     CaptureRecord,
     ChangeKind,
     CostEstimate,
+    DisplayRole,
     EvidenceGrade,
     LineageMatch,
     LineageStatus,
     ObservedChange,
+    OrderedUnit,
     ProviderDiagnostics,
     TurnDiagnosis,
     UsageObservation,
@@ -30,6 +32,33 @@ _BREAKING_CHANGE_KINDS = frozenset(
         ChangeKind.CONFIG_CHANGED,
     }
 )
+
+
+def _is_tail_only_edit(
+    observed_changes: tuple[ObservedChange, ...],
+    current_units: Sequence[OrderedUnit],
+) -> bool:
+    """True when the only breaking changes edit the final conversation unit of the request.
+
+    Everything before that unit is byte-identical to the parent, so the shared prefix is intact.
+    A turn without any breaking change is not a tail edit; it is simply unchanged.
+    """
+    if not current_units:
+        return False
+    tail_paths = {
+        unit.json_path for unit in current_units if unit.display_role is DisplayRole.CURRENT_INPUT
+    }
+    tail_edits = 0
+    for change in observed_changes:
+        if change.change_kind not in _BREAKING_CHANGE_KINDS:
+            continue
+        if (
+            change.change_kind is not ChangeKind.MUTATED_EXISTING
+            or change.json_path not in tail_paths
+        ):
+            return False
+        tail_edits += 1
+    return tail_edits > 0
 
 
 def _append_observed_change_causes(
@@ -102,8 +131,13 @@ def diagnose_turn(
     cost_estimate: CostEstimate | None,
     *,
     parent_usage: UsageObservation | None = None,
+    current_units: Sequence[OrderedUnit] = (),
 ) -> TurnDiagnosis:
-    """Aggregate observed changes, usage buckets, provider diagnostics, and inferred hypotheses."""
+    """Aggregate observed changes, usage buckets, provider diagnostics, and inferred hypotheses.
+
+    ``current_units`` are the request's ordered units; when given, an edit confined to the final
+    conversation unit is not treated as a prefix break. Without it, v0.1 behavior is kept.
+    """
     elapsed = record.timestamp - parent_record.timestamp if parent_record is not None else None
 
     causes: list[CandidateCause] = []
@@ -146,6 +180,7 @@ def diagnose_turn(
     _append_observed_change_causes(observed_changes, causes)
 
     has_breaking_change = any(c.change_kind in _BREAKING_CHANGE_KINDS for c in observed_changes)
+    tail_only_edit = _is_tail_only_edit(observed_changes, current_units)
 
     if usage.state is not UsageState.COMPLETE or usage.buckets is None:
         unresolved.append(
@@ -172,7 +207,7 @@ def diagnose_turn(
         if (
             buckets.cache_read == 0
             and lineage.status is LineageStatus.MATCHED
-            and not has_breaking_change
+            and (not has_breaking_change or tail_only_edit)
         ):
             parent_zero = (
                 parent_usage is not None
@@ -191,12 +226,25 @@ def diagnose_turn(
                 ]
                 if parent_zero:
                     ev.append("parent_cache_read=0")
+                if tail_only_edit:
+                    ev.append(
+                        "tail_edit="
+                        + ",".join(
+                            c.json_path
+                            for c in observed_changes
+                            if c.change_kind is ChangeKind.MUTATED_EXISTING
+                        )
+                    )
                 causes.append(
                     CandidateCause(
                         code="unexplained_low_hit",
                         grade=EvidenceGrade.INFERRED,
                         summary=(
-                            "Shared prefix remained structurally unchanged without exceeding "
+                            "Only the final conversation unit changed and the shared prefix "
+                            "before it stayed intact without exceeding TTL hint, "
+                            "yet cache_read remained 0."
+                            if tail_only_edit
+                            else "Shared prefix remained structurally unchanged without exceeding "
                             "TTL hint, yet cache_read remained 0."
                         ),
                         supporting_evidence=tuple(ev),

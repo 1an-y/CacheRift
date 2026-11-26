@@ -42,6 +42,33 @@ class DialectAdapter(Protocol):
     def extract_previous_response_ref(self, record: CaptureRecord) -> str | None: ...
 
 
+def strip_cache_control(value: Any, json_path: str) -> tuple[Any, list[tuple[str, Any]]]:
+    """Copy a JSON structure without any ``cache_control`` key.
+
+    Returns the copy and, for every key removed, its JSON path and its value.
+    """
+    if isinstance(value, Mapping):
+        cleaned: dict[str, Any] = {}
+        removed: list[tuple[str, Any]] = []
+        for key, item in value.items():
+            child_path = f"{json_path}.{key}"
+            if key == "cache_control":
+                removed.append((child_path, item))
+                continue
+            cleaned[str(key)], found = strip_cache_control(item, child_path)
+            removed.extend(found)
+        return cleaned, removed
+    if isinstance(value, (list, tuple)):
+        items: list[Any] = []
+        removed = []
+        for index, item in enumerate(value):
+            copied, found = strip_cache_control(item, f"{json_path}[{index}]")
+            items.append(copied)
+            removed.extend(found)
+        return items, removed
+    return value, []
+
+
 def compute_wire_spans(record: CaptureRecord) -> dict[str, ByteSpan] | None:
     """Return WIRE_RAW spans only when captured_body_bytes exist."""
     if record.captured_body_bytes is None:
@@ -135,11 +162,15 @@ def finalize_usage_buckets(
 
 
 def missing_usage(record: CaptureRecord, note: str) -> UsageObservation:
-    raw = record.response_body if isinstance(record.response_body, Mapping) else {}
+    # Keep only the usage object. Reports are printed without --include-snippets, so the rest of
+    # the response (model output, error text) must never ride along in raw_fields.
+    body = record.response_body
+    usage = body.get("usage") if isinstance(body, Mapping) else None
+    raw = dict(usage) if isinstance(usage, Mapping) else {}
     return UsageObservation(
         state=UsageState.MISSING,
         buckets=None,
-        raw_fields=freeze_json(dict(raw)),
+        raw_fields=freeze_json(raw),
         notes=(note,),
     )
 

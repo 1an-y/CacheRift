@@ -169,3 +169,8 @@ class PricingRegistry:
 
     def get_table(self, pricing_table_id: str) -> PricingTable | None:
         return self._tables.get(pricing_table_id)
+
+    def default_table_id(self) -> str | None:
+        """ID of the newest registered ``default-*`` table, or None when there is none."""
+        defaults = sorted(table_id for table_id in self._tables if table_id.startswith("default-"))
+        return defaults[-1] if defaults else None

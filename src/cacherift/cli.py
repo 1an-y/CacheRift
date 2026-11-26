@@ -1,8 +1,10 @@
-"""CLI entrypoint (`cacherift analyze`) and offline diagnosis pipeline."""
+"""CLI entrypoint (`cacherift <command>`) and the offline diagnosis pipeline."""
 
 from __future__ import annotations
 
 import argparse
+import importlib
+import importlib.util
 import json
 import sys
 from collections.abc import Sequence
@@ -10,7 +12,7 @@ from dataclasses import fields, is_dataclass
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Protocol, cast
 
 from rich.console import Console
 from rich.table import Table
@@ -30,46 +32,94 @@ from cacherift.core.models import (
     UsageObservation,
 )
 from cacherift.core.pricing import PricingTable, estimate_cost
-from cacherift.dialects.base import get_dialect_adapter
+from cacherift.dialects.base import get_dialect_adapter, invalid_usage
 from cacherift.io.capture import load_capture_records
 
+EXIT_OK = 0
+EXIT_FAILURE = 1
+EXIT_CONFIG = 2
 
-def _to_json_safe(value: Any) -> Any:
+
+class SubcommandModule(Protocol):
+    """Contract every `cacherift.<command>.cli` module implements."""
+
+    @staticmethod
+    def register_parser(
+        subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+    ) -> argparse.ArgumentParser: ...
+
+    @staticmethod
+    def run_command(args: argparse.Namespace) -> int: ...
+
+
+# Imported lazily by main() so `cacherift --help` never requires an optional extra.
+_SUBCOMMAND_MODULES: tuple[str, ...] = (
+    "cacherift.probe.cli",
+)
+
+
+class MissingDependencyError(RuntimeError):
+    """An optional extra required by a subcommand is not installed."""
+
+
+def require_modules(command: str, install_extra: str, *modules: str) -> None:
+    """Raise MissingDependencyError unless every ``modules`` name is importable."""
+    missing = [name for name in modules if importlib.util.find_spec(name) is None]
+    if missing:
+        raise MissingDependencyError(
+            f"cacherift {command} needs the optional dependency '{missing[0]}'; "
+            f"install it with: pip install 'cacherift[{install_extra}]'"
+        )
+
+
+def to_json_safe(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
     if is_dataclass(value) and not isinstance(value, type):
-        return {f.name: _to_json_safe(getattr(value, f.name)) for f in fields(value)}
+        return {f.name: to_json_safe(getattr(value, f.name)) for f in fields(value)}
     if isinstance(value, MappingProxyType):
-        return {k: _to_json_safe(v) for k, v in value.items()}
+        return {k: to_json_safe(v) for k, v in value.items()}
     if isinstance(value, dict):
-        return {str(k): _to_json_safe(v) for k, v in value.items()}
+        return {str(k): to_json_safe(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_to_json_safe(item) for item in value]
+        return [to_json_safe(item) for item in value]
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value
 
 
-def analyze_records(
-    records: Sequence[CaptureRecord],
-    *,
-    capability_registry: CapabilityRegistry | None = None,
-    pricing_registry: PricingRegistry | None = None,
-    pricing_table_id: str | None = None,
-    include_snippets: bool = False,
-) -> list[TurnDiagnosis]:
-    """Run the full offline CacheRift diagnostic pipeline across a sequence of records."""
-    cap_reg = capability_registry or CapabilityRegistry.load_default()
-    price_reg = pricing_registry or PricingRegistry.load_default()
+def emit_json(payload: Any) -> None:
+    """Write a pretty JSON document to stdout (shared by every `--format json` subcommand)."""
+    sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
 
-    resolver = LineageResolver()
-    units_by_id: dict[str, tuple[OrderedUnit, ...]] = {}
-    cfg_by_id: dict[str, CacheConfigFingerprint] = {}
-    usage_by_id: dict[str, UsageObservation] = {}
-    diagnoses: list[TurnDiagnosis] = []
 
-    for rec in records:
-        cap = cap_reg.lookup(
+class DiagnosisSession:
+    """Stateful offline pipeline: feed capture records in order and get one diagnosis each.
+
+    Keeps lineage, unit and config state alive between turns, so callers that capture
+    incrementally (the proxy) pay one analysis per record instead of re-running the batch.
+    """
+
+    def __init__(
+        self,
+        *,
+        capability_registry: CapabilityRegistry | None = None,
+        pricing_registry: PricingRegistry | None = None,
+        pricing_table_id: str | None = None,
+        include_snippets: bool = False,
+    ) -> None:
+        self._cap_reg = capability_registry or CapabilityRegistry.load_default()
+        self._price_reg = pricing_registry or PricingRegistry.load_default()
+        self._pricing_table_id = pricing_table_id
+        self._include_snippets = include_snippets
+        self._resolver = LineageResolver()
+        self._units_by_id: dict[str, tuple[OrderedUnit, ...]] = {}
+        self._cfg_by_id: dict[str, CacheConfigFingerprint] = {}
+        self._usage_by_id: dict[str, UsageObservation] = {}
+
+    def feed(self, rec: CaptureRecord) -> TurnDiagnosis:
+        """Diagnose one record against every record fed before it."""
+        cap = self._cap_reg.lookup(
             rec.identity.dialect,
             rec.identity.provider,
             rec.identity.model,
@@ -78,9 +128,19 @@ def analyze_records(
         adapter = get_dialect_adapter(rec.identity.dialect)
         units, cfg = adapter.extract_ordered_units(rec, cap)
         prev_ref = adapter.extract_previous_response_ref(rec)
-        lineage, parent = resolver.resolve_and_register(rec, units, prev_ref)
-        usage = adapter.extract_usage(rec)
+        # Anything that can raise on odd provider data runs before the resolver is touched, and
+        # the turn's derived state is stored the moment it is registered: a failure further down
+        # must never leave a half-registered record for later turns to trip over.
+        try:
+            usage = adapter.extract_usage(rec)
+        except (ValueError, TypeError, KeyError, AttributeError, IndexError) as exc:
+            # Odd provider data surfaces as an INVALID observation, never as a crash.
+            usage = invalid_usage({}, f"usage_not_parseable: {type(exc).__name__}")
         provider_diag = adapter.extract_provider_diagnostics(rec)
+        lineage, parent = self._resolver.resolve_and_register(rec, units, prev_ref)
+        self._units_by_id[rec.record_id] = units
+        self._cfg_by_id[rec.record_id] = cfg
+        self._usage_by_id[rec.record_id] = usage
 
         changes: tuple[ObservedChange, ...] = ()
         parent_usage: UsageObservation | None = None
@@ -88,17 +148,19 @@ def analyze_records(
             changes = compare_turns(
                 parent,
                 rec,
-                units_by_id[parent.record_id],
+                self._units_by_id[parent.record_id],
                 units,
-                cfg_by_id[parent.record_id],
+                self._cfg_by_id[parent.record_id],
                 cfg,
-                include_snippets=include_snippets,
+                include_snippets=self._include_snippets,
             )
-            parent_usage = usage_by_id[parent.record_id]
+            parent_usage = self._usage_by_id[parent.record_id]
 
-        effective_table_id = pricing_table_id or rec.identity.pricing_table_id
+        effective_table_id = self._pricing_table_id or rec.identity.pricing_table_id
         table: PricingTable | None = (
-            price_reg.get_table(effective_table_id) if effective_table_id is not None else None
+            self._price_reg.get_table(effective_table_id)
+            if effective_table_id is not None
+            else None
         )
         effective_identity = (
             EndpointIdentity(
@@ -124,16 +186,33 @@ def analyze_records(
             cap,
             cost,
             parent_usage=parent_usage,
+            current_units=units,
         )
-        units_by_id[rec.record_id] = units
-        cfg_by_id[rec.record_id] = cfg
-        usage_by_id[rec.record_id] = usage
-        diagnoses.append(diag)
+        return diag
 
-    return diagnoses
+    def diagnose_all(self, records: Sequence[CaptureRecord]) -> list[TurnDiagnosis]:
+        return [self.feed(rec) for rec in records]
 
 
-def _render_table(diagnoses: Sequence[TurnDiagnosis], console: Console) -> None:
+def analyze_records(
+    records: Sequence[CaptureRecord],
+    *,
+    capability_registry: CapabilityRegistry | None = None,
+    pricing_registry: PricingRegistry | None = None,
+    pricing_table_id: str | None = None,
+    include_snippets: bool = False,
+) -> list[TurnDiagnosis]:
+    """Run the full offline CacheRift diagnostic pipeline across a sequence of records."""
+    return DiagnosisSession(
+        capability_registry=capability_registry,
+        pricing_registry=pricing_registry,
+        pricing_table_id=pricing_table_id,
+        include_snippets=include_snippets,
+    ).diagnose_all(records)
+
+
+def render_diagnosis_table(diagnoses: Sequence[TurnDiagnosis], console: Console) -> None:
+    """Print one row per turn: lineage, usage, observed changes, graded causes (zero body text)."""
     table = Table(title="CacheRift Offline Diagnosis", show_lines=True)
     table.add_column("Record", style="bold")
     table.add_column("Dialect / Model")
@@ -195,15 +274,10 @@ def _render_table(diagnoses: Sequence[TurnDiagnosis], console: Console) -> None:
     console.print(table)
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="cacherift",
-        description="CacheRift: Prompt Cache Reliability for AI Agents.",
-    )
-    parser.add_argument("--version", action="store_true", help="Show version and exit.")
-    sub = parser.add_subparsers(dest="command")
-
-    analyze_p = sub.add_parser(
+def _register_analyze(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> argparse.ArgumentParser:
+    analyze_p = subparsers.add_parser(
         "analyze", help="Diagnose prompt cache behavior from a JSONL capture file."
     )
     analyze_p.add_argument("capture_path", type=Path, help="Path to JSONL capture file.")
@@ -223,6 +297,59 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include truncated prompt/unit snippets in output (disabled by default).",
     )
+    return analyze_p
+
+
+def _run_analyze(args: argparse.Namespace) -> int:
+    capture_path: Path = args.capture_path
+    if not capture_path.is_file():
+        sys.stderr.write(f"Capture file not found: {capture_path}\n")
+        return EXIT_FAILURE
+
+    price_reg = PricingRegistry.load_default()
+    if args.pricing_table is not None and price_reg.get_table(args.pricing_table) is None:
+        sys.stderr.write(f"Unknown pricing table id: {args.pricing_table}\n")
+        return EXIT_FAILURE
+
+    try:
+        records = load_capture_records(capture_path)
+    except (ValueError, KeyError, TypeError) as exc:
+        sys.stderr.write(f"cannot read capture {capture_path}: {exc!r}\n")
+        return EXIT_FAILURE
+    diagnoses = analyze_records(
+        records,
+        pricing_registry=price_reg,
+        pricing_table_id=args.pricing_table,
+        include_snippets=bool(args.include_snippets),
+    )
+
+    if args.format == "json":
+        emit_json(
+            {
+                "cacherift_version": __version__,
+                "include_snippets": bool(args.include_snippets),
+                "turns": [to_json_safe(d) for d in diagnoses],
+            }
+        )
+        return EXIT_OK
+
+    console = Console(file=sys.stdout, width=140, markup=False)
+    render_diagnosis_table(diagnoses, console)
+    return EXIT_OK
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="cacherift",
+        description="CacheRift: Prompt Cache Reliability for AI Agents.",
+    )
+    parser.add_argument("--version", action="store_true", help="Show version and exit.")
+    sub = parser.add_subparsers(dest="command")
+
+    _register_analyze(sub)
+    for module_name in _SUBCOMMAND_MODULES:
+        module = cast(SubcommandModule, importlib.import_module(module_name))
+        module.register_parser(sub).set_defaults(module=module_name)
     return parser
 
 
@@ -232,42 +359,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.version:
         sys.stdout.write(f"cacherift {__version__}\n")
-        return 0
+        return EXIT_OK
 
-    if args.command != "analyze":
+    command: str | None = args.command
+    if command is None:
         parser.print_help()
-        return 2
+        return EXIT_CONFIG
 
-    capture_path: Path = args.capture_path
-    if not capture_path.is_file():
-        sys.stderr.write(f"Capture file not found: {capture_path}\n")
-        return 1
-
-    price_reg = PricingRegistry.load_default()
-    if args.pricing_table is not None and price_reg.get_table(args.pricing_table) is None:
-        sys.stderr.write(f"Unknown pricing table id: {args.pricing_table}\n")
-        return 1
-
-    records = load_capture_records(capture_path)
-    diagnoses = analyze_records(
-        records,
-        pricing_registry=price_reg,
-        pricing_table_id=args.pricing_table,
-        include_snippets=bool(args.include_snippets),
-    )
-
-    if args.format == "json":
-        payload = {
-            "cacherift_version": __version__,
-            "include_snippets": bool(args.include_snippets),
-            "turns": [_to_json_safe(d) for d in diagnoses],
-        }
-        sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-        return 0
-
-    console = Console(file=sys.stdout, width=140, markup=False)
-    _render_table(diagnoses, console)
-    return 0
+    try:
+        if command == "analyze":
+            return _run_analyze(args)
+        module = cast(SubcommandModule, importlib.import_module(args.module))
+        return module.run_command(args)
+    except MissingDependencyError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return EXIT_CONFIG
 
 
 if __name__ == "__main__":

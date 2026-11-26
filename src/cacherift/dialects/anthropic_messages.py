@@ -24,27 +24,18 @@ from cacherift.dialects.base import (
     invalid_usage,
     make_ordered_unit,
     missing_usage,
+    strip_cache_control,
     unique_tool_unit_id,
 )
 
 
-def _strip_cache_control(value: Any, json_path: str, found: list[tuple[str, str, Any]]) -> Any:
-    """Copy frozen structure without nested cache_control, recording breakpoint locations."""
-    if isinstance(value, Mapping):
-        cleaned: dict[str, Any] = {}
-        for key, item in value.items():
-            child_path = f"{json_path}.{key}"
-            if key == "cache_control":
-                found.append((child_path, "cache_control", freeze_json(item)))
-                continue
-            cleaned[str(key)] = _strip_cache_control(item, child_path, found)
-        return cleaned
-    if isinstance(value, (list, tuple)):
-        return [
-            _strip_cache_control(item, f"{json_path}[{idx}]", found)
-            for idx, item in enumerate(value)
-        ]
-    return value
+def _strip_cache_control(
+    value: Any, json_path: str, found: list[tuple[str, str, Any]]
+) -> Any:
+    """Copy a structure without its cache_control keys, recording each as a breakpoint."""
+    cleaned, removed = strip_cache_control(value, json_path)
+    found.extend((path, "cache_control", freeze_json(item)) for path, item in removed)
+    return cleaned
 
 
 def _extract_anthropic_usage_snapshot(record: CaptureRecord) -> Mapping[str, Any] | None:
