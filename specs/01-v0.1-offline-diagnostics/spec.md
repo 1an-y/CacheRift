@@ -40,3 +40,11 @@
 - **C8**：连续两次同前缀请求均 `cache_read == 0` -> 输出 `unexplained_low_hit` + 多候选原因 + `unresolved`，严禁定责网关吞参数。
 - **C9**：前缀变化与超默认 TTL 同时发生 -> `candidate_causes` 同时包含两项及各自证据，不做单选裁决。
 - **C10**：仅导入解析态 dict 且未开 `--include-snippets` -> 坐标系为 `PROJECTED`（`wire_span=None`）且报告零正文片段。
+
+## 后记（v0.1.5–v0.2c 迭代对内核的增补）
+
+以下三项在外围命令的迭代中落地，均不改变上面 C1–C10 的断言。
+
+- **仅末尾会话单元的改写不算前缀断裂**：`diagnose_turn` 增加关键字参数 `current_units`；没有任何破坏性变更的轮次不算「末尾改写」，仍按原口径输出。详见 `specs/02-v0.1.5-controlled-probe/spec.md` 第 11 条。
+- **`missing_usage` 的 `raw_fields` 只保留响应体里的 `usage` 对象**：v0.1 把整个响应体放了进去，导致 `analyze --format json` 在没有 `--include-snippets` 时也会带出模型输出或错误文本，与「默认零正文」红线冲突。
+- **用量无法解析时记 `UsageState.INVALID`**：适配器遇到无法转成数字的 token 计数这类异常数据时抛出的异常，由诊断会话转成带 `usage_not_parseable:<异常类型>` 注记的 `INVALID` 观测。流水线不再因此崩溃，也不会留下半登记的记录。`cacherift analyze` 遇到无法解析的捕获文件时同样改为单行报错并退出 `1`。

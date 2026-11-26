@@ -35,3 +35,27 @@ _Avoid_: Confidence score
 **Candidate Cause**:
 A graded explanation hypothesis supported by observed changes, provider diagnostics, or timing, without forcing single-label exclusivity.
 _Avoid_: Root cause, miss cause
+
+**Probe Scenario**:
+A controlled experiment made of a few byte-exact requests with declared baselines. It is admitted as a whole group or not at all.
+_Avoid_: Benchmark, test case
+
+**Budget Fuse**:
+The check made before each probe request. It refuses to send anything that would cross the request cap or the worst-case cost cap; a cost that cannot be estimated blocks sending.
+_Avoid_: Quota, limit
+
+**Check Policy**:
+The resolved severity of every rule for one build: error, warning, ignore, or allowed. Configuration names rules; rules it does not name keep their defaults.
+_Avoid_: Threshold, SLA
+
+**Finding**:
+One policy verdict on one turn: a rule ID, its severity, a JSON path, and the record's line in the capture.
+_Avoid_: Error log, violation count
+
+**Repair Rule**:
+One of four whitelisted rewrites that are provably equivalent for the model. Nothing outside the list may rewrite a request body.
+_Avoid_: Fix, patch, optimization
+
+**Repair Audit Entry**:
+The hash trail of one repaired or refused record: whole-body fingerprints before and after, labelled with their coordinate space, plus a fingerprint pair for each rewritten node.
+_Avoid_: Diff, changelog

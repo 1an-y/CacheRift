@@ -36,10 +36,10 @@ def test_freeze_json_is_deeply_immutable_and_preserves_key_order() -> None:
     assert isinstance(frozen["tools"], tuple)
 
     with pytest.raises(TypeError):
-        frozen["meta"]["z"] = 2  # type: ignore[index]
+        frozen["meta"]["z"] = 2
 
     with pytest.raises(TypeError):
-        frozen["tools"][0]["name"] = "mutated"  # type: ignore[index]
+        frozen["tools"][0]["name"] = "mutated"
 
     assert thaw_json(frozen) == {
         "meta": {"z": 1, "a": 2, "m": 3},
@@ -219,7 +219,17 @@ def test_core_modules_have_no_forbidden_io_imports() -> None:
     import ast
     from pathlib import Path
 
-    forbidden = {"httpx", "requests", "urllib", "socket", "pathlib", "os", "rich"}
+    forbidden = {"httpx", "uvicorn", "requests", "urllib", "socket", "pathlib", "os", "rich"}
+    # The command packages and the I/O layer are built around the kernel. The kernel must never
+    # depend back on them, whatever import style is used.
+    forbidden_cacherift = (
+        "cacherift.probe",
+        "cacherift.proxy",
+        "cacherift.check",
+        "cacherift.repair",
+        "cacherift.cli",
+        "cacherift.io",
+    )
     core_dir = Path(__file__).resolve().parents[1] / "src" / "cacherift" / "core"
     for py_file in sorted(core_dir.glob("*.py")):
         tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
@@ -229,5 +239,10 @@ def test_core_modules_have_no_forbidden_io_imports() -> None:
                     top = alias.name.split(".", 1)[0]
                     assert top not in forbidden, f"{py_file.name} imports {top}"
             elif isinstance(node, ast.ImportFrom) and node.module:
-                top = node.module.split(".", 1)[0]
+                module = node.module
+                top = module.split(".", 1)[0]
                 assert top not in forbidden, f"{py_file.name} imports {top}"
+                assert not any(
+                    module == package or module.startswith(f"{package}.")
+                    for package in forbidden_cacherift
+                ), f"{py_file.name} imports {module}"
