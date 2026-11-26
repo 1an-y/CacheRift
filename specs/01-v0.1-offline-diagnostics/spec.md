@@ -48,3 +48,4 @@
 - **仅末尾会话单元的改写不算前缀断裂**：`diagnose_turn` 增加关键字参数 `current_units`；没有任何破坏性变更的轮次不算「末尾改写」，仍按原口径输出。详见 `specs/02-v0.1.5-controlled-probe/spec.md` 第 11 条。
 - **`missing_usage` 的 `raw_fields` 只保留响应体里的 `usage` 对象**：v0.1 把整个响应体放了进去，导致 `analyze --format json` 在没有 `--include-snippets` 时也会带出模型输出或错误文本，与「默认零正文」红线冲突。
 - **用量无法解析时记 `UsageState.INVALID`**：适配器遇到无法转成数字的 token 计数这类异常数据时抛出的异常，由诊断会话转成带 `usage_not_parseable:<异常类型>` 注记的 `INVALID` 观测。流水线不再因此崩溃，也不会留下半登记的记录。`cacherift analyze` 遇到无法解析的捕获文件时同样改为单行报错并退出 `1`。
+- **0 token 写入桶不阻断成本估算**：方言适配器（`openai_responses`、`anthropic_messages`）在 `cache_write_tokens == 0` 时不产出写入桶（负值仍判 `UsageState.INVALID`）；`core/pricing.py:estimate_cost()` 对 `tokens == 0` 的写入桶直接跳过，仅在存在非零写入且价表无对应写入档单价时返回 `None`。

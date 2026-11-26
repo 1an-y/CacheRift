@@ -15,7 +15,7 @@ import httpx
 
 from cacherift.capabilities.registry import CapabilityRegistry, PricingRegistry
 from cacherift.core.freeze import freeze_json
-from cacherift.core.models import CaptureRecord, EndpointIdentity
+from cacherift.core.models import CaptureRecord, EndpointIdentity, UsageState
 from cacherift.core.pricing import estimate_cost
 from cacherift.dialects.base import get_dialect_adapter
 from cacherift.io.redact import redact_headers, scrub_secrets, secret_fragments
@@ -113,6 +113,7 @@ class ProbeRunResult:
     records: tuple[CaptureRecord, ...]
     stopped_reason: str | None
     spent_usd: float
+    warnings: tuple[str, ...] = ()
 
 
 class ProbeRunner:
@@ -131,11 +132,14 @@ class ProbeRunner:
         pricing_registry: PricingRegistry | None = None,
         clock: Callable[[], float] = time.time,
         run_id: str | None = None,
+        prefix_tokens: int | None = None,
     ) -> None:
         pricing = pricing_registry or PricingRegistry.load_default()
         table_id = identity.pricing_table_id
         if table_id is not None and pricing.get_table(table_id) is None:
             raise ProbeConfigError(f"unknown pricing table id: {table_id}")
+        if prefix_tokens is not None and prefix_tokens < 1:
+            raise ProbeConfigError("--prefix-tokens must be at least 1")
         self._identity = identity
         self._url = url
         self._api_key_env = api_key_env
@@ -144,6 +148,7 @@ class ProbeRunner:
         self._transport = transport
         self._clock = clock
         self._run_id = run_id or new_run_id()
+        self._prefix_tokens = prefix_tokens
         self._capabilities = capability_registry or CapabilityRegistry.load_default()
         self._table = pricing.get_table(table_id) if table_id is not None else None
 
@@ -171,6 +176,7 @@ class ProbeRunner:
                 ttl=self._ttl,
                 nonce=self._run_id,
                 min_cache_tokens=capability.min_cache_tokens,
+                prefix_tokens=self._prefix_tokens,
             )
         }
         names = list(scenarios) if scenarios else list(available)
@@ -199,6 +205,22 @@ class ProbeRunner:
             ),
         )
 
+    def _step_session_id(self, scenario: ProbeScenario, step: ProbeStep) -> str:
+        # Multi-root comparison scenarios (e.g. gpt62_instructions_placement) contain independent
+        # baselines; keep each baseline chain isolated so root steps never match an unrelated root.
+        roots = [s.label for s in scenario.steps if s.parent is None]
+        if len(roots) <= 1:
+            return f"{self._run_id}:{scenario.name}"
+        parent_by_label = {s.label: s.parent for s in scenario.steps}
+        current = step.label
+        seen: set[str] = set()
+        while True:
+            parent = parent_by_label.get(current)
+            if parent is None or current in seen:
+                return f"{self._run_id}:{scenario.name}:{current}"
+            seen.add(current)
+            current = parent
+
     def _planned_step(
         self, scenario: ProbeScenario, step: ProbeStep, write_tier: str | None
     ) -> PlannedStep:
@@ -207,7 +229,7 @@ class ProbeRunner:
             scenario=scenario.name,
             label=step.label,
             intent=step.intent,
-            session_id=f"{self._run_id}:{scenario.name}",
+            session_id=self._step_session_id(scenario, step),
             parent_record_id=(
                 f"{self._run_id}:{scenario.name}:{step.parent}" if step.parent else None
             ),
@@ -263,6 +285,7 @@ class ProbeRunner:
         secrets_to_scrub = secret_fragments(headers)
         tracker = BudgetTracker(self._budget)
         records: list[CaptureRecord] = []
+        warnings: list[str] = []
         stopped: str | None = None
 
         def keep(record: CaptureRecord) -> None:
@@ -295,6 +318,16 @@ class ProbeRunner:
                 record = self._capture(step, request, response, sent_at, secrets_to_scrub)
                 keep(record)
                 usage = get_dialect_adapter(self._identity.dialect).extract_usage(record)
+                if (
+                    usage.state is UsageState.COMPLETE
+                    and usage.buckets is not None
+                    and usage.buckets.output > MAX_OUTPUT_TOKENS
+                ):
+                    warnings.append(
+                        f"{step.scenario}:{step.label} returned {usage.buckets.output} output "
+                        f"tokens, exceeding max_output_tokens={MAX_OUTPUT_TOKENS}; upstream did "
+                        "not enforce the per-request output cap"
+                    )
                 actual = estimate_cost(self._identity, usage, self._table)
                 tracker.settle(
                     actual.estimated_total_cost_usd if actual is not None else None,
@@ -304,7 +337,7 @@ class ProbeRunner:
                     stopped = f"http_{response.status_code}"
                     break
 
-        return ProbeRunResult(tuple(records), stopped, tracker.spent_usd)
+        return ProbeRunResult(tuple(records), stopped, tracker.spent_usd, tuple(warnings))
 
     def _headers(self, api_key: str) -> dict[str, str]:
         if self._identity.dialect == "anthropic_messages":

@@ -49,7 +49,7 @@ from cacherift.probe.scenarios import (
 
 TEST_KEY = "sk-TEST-SECRET-DO-NOT-LOG-0123456789"
 TEST_KEY_ENV = "CACHELIFT_TEST_KEY"
-DEFAULT_BUDGET = ProbeBudget(max_requests=12, max_cost_usd=0.05, execute=True)
+DEFAULT_BUDGET = ProbeBudget(max_requests=12, max_cost_usd=0.10, execute=True)
 
 _SYSTEM = "S" * 6000
 _ROUND1 = {
@@ -371,11 +371,20 @@ def test_shared_prefix_meets_token_floor_and_is_deterministic() -> None:
     assert [s.steps for s in first] == [
         s.steps for s in build_scenarios("openai_responses", "gpt-6.1", nonce="run-a")
     ]
-    assert all(len(step.body) // 4 >= 1200 for s in first for step in s.steps)
+    assert all(len(step.body) >= 2200 * 5 for s in first for step in s.steps)
+    assert all(len(step.body) // 4 >= 2200 for s in first for step in s.steps)
     other = build_scenarios("openai_responses", "gpt-6.1", nonce="run-b")
     assert first[0].steps[0].body != other[0].steps[0].body  # a new run starts cold
-    haiku = build_scenarios("anthropic_messages", "claude-haiku-4-5", min_cache_tokens=2048)
-    assert all(len(step.body) // 4 >= 2048 for step in haiku[0].steps)
+    haiku = build_scenarios("anthropic_messages", "claude-haiku-4-5", min_cache_tokens=4096)
+    assert all(len(step.body) >= 4096 * 5 for step in haiku[0].steps)
+    assert all(len(step.body) // 4 >= 4096 for step in haiku[0].steps)
+
+    custom_small = build_scenarios(
+        "openai_responses", "gpt-6.1", min_cache_tokens=1024, prefix_tokens=500
+    )
+    assert all(500 * 5 <= len(step.body) < 1200 * 5 for step in custom_small[0].steps)
+    custom_large = build_scenarios("openai_responses", "gpt-6.1", prefix_tokens=4500)
+    assert all(len(step.body) >= 4500 * 5 for step in custom_large[0].steps)
 
 
 def test_anthropic_prefix_carries_cache_control_with_ttl() -> None:
@@ -421,6 +430,8 @@ def _usage_body(
     write_tier: str,
     echo: str | None,
     ok: bool,
+    output_tokens: int = 16,
+    cache_write_tokens: int | None = None,
 ) -> dict[str, Any]:
     if not ok:
         return {"error": {"type": "invalid_request_error", "message": f"rejected key {echo}"}}
@@ -439,9 +450,12 @@ def _usage_body(
                     "ephemeral_5m_input_tokens": writes if write_tier == "5m" else 0,
                     "ephemeral_1h_input_tokens": writes if write_tier == "1h" else 0,
                 },
-                "output_tokens": 16,
+                "output_tokens": output_tokens,
             },
         }
+    details: dict[str, Any] = {"cached_tokens": cached}
+    if cache_write_tokens is not None:
+        details["cache_write_tokens"] = cache_write_tokens
     return {
         "id": "resp_probe",
         "object": "response",
@@ -449,8 +463,8 @@ def _usage_body(
         "output": [],
         "usage": {
             "input_tokens": total,
-            "input_tokens_details": {"cached_tokens": cached},
-            "output_tokens": 16,
+            "input_tokens_details": details,
+            "output_tokens": output_tokens,
         },
     }
 
@@ -467,13 +481,17 @@ class _FakeUpstream:
         echo_header: str | None = None,
         write_tier: str = "5m",
         error: Exception | None = None,
+        output_tokens: int = 16,
+        cache_write_tokens: int | None = None,
     ) -> None:
         self.dialect = dialect
-        self.usage_for = usage_for or (lambda _n: (0, 1500, 0))
+        self.usage_for = usage_for or (lambda _n: (0, 2200, 0))
         self.status = status
         self.echo_header = echo_header
         self.write_tier = write_tier
         self.error = error
+        self.output_tokens = output_tokens
+        self.cache_write_tokens = cache_write_tokens
         self.requests: list[httpx.Request] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -492,6 +510,8 @@ class _FakeUpstream:
                 write_tier=self.write_tier,
                 echo=echo,
                 ok=self.status < 400,
+                output_tokens=self.output_tokens,
+                cache_write_tokens=self.cache_write_tokens,
             ),
         )
 
@@ -799,6 +819,110 @@ def test_probe_records_diagnose_each_scenario_as_designed(monkeypatch: pytest.Mo
     assert "non_cacheable_top_level_instructions" not in _codes(dev)
 
 
+def test_multi_root_scenarios_keep_independent_roots_without_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for model in ("gpt-6.1-sol", "gpt-6.2-sol"):
+        by_step = _diagnosed(_FakeUpstream("openai_responses"), monkeypatch, model=model)
+        top_r1 = by_step[("gpt62_instructions_placement", "top_round1")]
+        dev_r1 = by_step[("gpt62_instructions_placement", "dev_round1")]
+        for root in (top_r1, dev_r1):
+            assert root.lineage.status is LineageStatus.NO_BASELINE
+            assert root.lineage.parent_record_id is None
+            assert root.observed_changes == ()
+
+    monkeypatch.setenv("OPENAI_API_KEY", TEST_KEY)
+    capture_path = tmp_path / "gpt61-placement.jsonl"
+    upstream = _FakeUpstream("openai_responses", usage_for=lambda n: (0, 2200, 0))
+    rc = probe_cli.run_command(
+        _args(
+            *_base_argv("openai_responses", "gpt-6.1-sol"),
+            "--execute",
+            "--scenario",
+            "gpt62_instructions_placement",
+            "--output",
+            str(capture_path),
+        ),
+        transport=httpx.MockTransport(upstream),
+    )
+    assert rc == 0
+    assert main(["check", str(capture_path)]) == 0
+
+
+def test_probe_settles_actual_cost_when_openai_returns_zero_cache_write_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(TEST_KEY_ENV, TEST_KEY)
+    upstream = _FakeUpstream(
+        "openai_responses",
+        usage_for=lambda _n: (0, 2200, 0),
+        output_tokens=5,
+        cache_write_tokens=0,
+    )
+    runner = _runner(upstream, model="gpt-6.1-sol")
+    plan = runner.plan(scenarios=("baseline_identical_pair",))
+    result = runner.execute(plan)
+    expected_actual = 2 * (2200 * 2.00 + 5 * 10.00) / 1_000_000
+    assert result.spent_usd == pytest.approx(expected_actual)
+    assert plan.worst_case_usd is not None and result.spent_usd < plan.worst_case_usd
+
+
+def test_probe_warns_when_upstream_exceeds_max_output_tokens(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(TEST_KEY_ENV, TEST_KEY)
+    monkeypatch.setenv("OPENAI_API_KEY", TEST_KEY)
+    upstream = _FakeUpstream(
+        "openai_responses",
+        usage_for=lambda _n: (0, 2200, 0),
+        output_tokens=678,
+        cache_write_tokens=0,
+    )
+    runner = _runner(upstream, model="gpt-6.1-sol")
+    plan = runner.plan(scenarios=("baseline_identical_pair",))
+    result = runner.execute(plan)
+    assert len(result.warnings) == 2
+    assert "678" in result.warnings[0]
+    assert "64" in result.warnings[0]
+    assert "baseline_identical_pair:round1" in result.warnings[0]
+
+    capture_path = tmp_path / "over-output.jsonl"
+    rc = probe_cli.run_command(
+        _args(
+            *_base_argv("openai_responses", "gpt-6.1-sol"),
+            "--execute",
+            "--scenario",
+            "baseline_identical_pair",
+            "--format",
+            "json",
+            "--output",
+            str(capture_path),
+        ),
+        transport=httpx.MockTransport(upstream),
+    )
+    captured = capsys.readouterr()
+    assert rc == 0
+    payload = json.loads(captured.out)
+    assert payload["warnings"] == list(result.warnings)
+    assert "warning:" in captured.err and "678" in captured.err
+
+    tight_upstream = _FakeUpstream(
+        "openai_responses",
+        usage_for=lambda _n: (0, 2200, 0),
+        output_tokens=1000,
+        cache_write_tokens=0,
+    )
+    tight_runner = _runner(
+        tight_upstream,
+        model="gpt-6.1-sol",
+        budget=ProbeBudget(max_requests=12, max_cost_usd=0.014, execute=True),
+    )
+    tight_plan = tight_runner.plan(scenarios=("baseline_identical_pair",))
+    tight_result = tight_runner.execute(tight_plan)
+    assert tight_result.stopped_reason == "budget_exceeded"
+    assert len(tight_result.records) == 1
+
+
 def test_p5_zero_hit_baseline_keeps_unexplained_low_hit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -886,7 +1010,15 @@ def test_p1_cli_json_dry_run_lists_every_step(capsys: pytest.CaptureFixture[str]
         sum(step["worst_case_usd"] for step in steps)
     )
     assert all(step["estimated_tokens"] == step["bytes"] // 4 for step in steps)
-    assert report["budget"] == {"max_requests": 12, "max_cost_usd": 0.05}
+    assert report["budget"] == {"max_requests": 12, "max_cost_usd": 0.10}
+
+
+def test_p1_cli_prefix_tokens_scales_dry_run_bytes(capsys: pytest.CaptureFixture[str]) -> None:
+    rc = main(["probe", *_base_argv(), "--prefix-tokens", "4500", "--format", "json"])
+    report = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    steps = [step for scenario in report["scenarios"] for step in scenario["steps"]]
+    assert all(step["bytes"] >= 4500 * 5 for step in steps)
 
 
 def test_cli_execute_writes_jsonl_and_reports_without_leaking(
@@ -962,6 +1094,8 @@ def test_cli_reports_budget_skipped_scenarios_with_nonzero_exit(
         (["--pricing-table", "no-such-table"], "no-such-table"),
         (["--max-requests", "0"], "--max-requests"),
         (["--max-cost-usd", "0"], "--max-cost-usd"),
+        (["--prefix-tokens", "0"], "--prefix-tokens"),
+        (["--prefix-tokens", "-1"], "--prefix-tokens"),
     ],
 )
 def test_cli_rejects_invalid_configuration(

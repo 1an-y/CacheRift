@@ -66,12 +66,53 @@ support_level = "full"
 source_version = "anthropic-docs-2026-11"
 unit_order = ["tools", "system", "messages"]
 
+# https://platform.claude.com/docs/en/build-with-claude/prompt-caching, checked 2026-11-27:
+# Opus 4.6/4.5 and Haiku 4.5 require a 4096-token minimum cacheable prefix.
+[[capabilities]]
+dialect = "anthropic_messages"
+provider = "anthropic"
+model_pattern = "claude-opus-4-6*"
+gateway_profile = "*"
+min_cache_tokens = 4096
+ttl_semantics = "ephemeral_5m_or_1h"
+ttl_seconds_hint = 300
+prefix_order_note = "tools -> system -> messages"
+support_level = "full"
+source_version = "anthropic-docs-2026-11"
+unit_order = ["tools", "system", "messages"]
+
+[[capabilities]]
+dialect = "anthropic_messages"
+provider = "anthropic"
+model_pattern = "claude-opus-4-5*"
+gateway_profile = "*"
+min_cache_tokens = 4096
+ttl_semantics = "ephemeral_5m_or_1h"
+ttl_seconds_hint = 300
+prefix_order_note = "tools -> system -> messages"
+support_level = "full"
+source_version = "anthropic-docs-2026-11"
+unit_order = ["tools", "system", "messages"]
+
 [[capabilities]]
 dialect = "anthropic_messages"
 provider = "anthropic"
 model_pattern = "claude-haiku-4*"
 gateway_profile = "*"
 min_cache_tokens = 2048
+ttl_semantics = "ephemeral_5m_or_1h"
+ttl_seconds_hint = 300
+prefix_order_note = "tools -> system -> messages"
+support_level = "full"
+source_version = "anthropic-docs-2026-11"
+unit_order = ["tools", "system", "messages"]
+
+[[capabilities]]
+dialect = "anthropic_messages"
+provider = "anthropic"
+model_pattern = "claude-haiku-4-5*"
+gateway_profile = "*"
+min_cache_tokens = 4096
 ttl_semantics = "ephemeral_5m_or_1h"
 ttl_seconds_hint = 300
 prefix_order_note = "tools -> system -> messages"

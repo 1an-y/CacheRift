@@ -10,3 +10,5 @@
   - 验收：`.venv/bin/pytest tests/test_probe.py -k "runner"`（P2、P3、P4、P5 端到端，`httpx.MockTransport` 零网络）
 - [x] **T5 CLI**：实现 `probe/cli.py` 并接入 `cli.py` 分发表。
   - 验收：`.venv/bin/pytest tests/test_probe.py`（P1–P5 全绿）+ `.venv/bin/ruff check src tests` + `.venv/bin/mypy src tests`
+- [x] **T6 真实中转实测暴露的四项修复**：默认前缀目标升至 `>=2200`（`target_tokens * 5` 字节，默认预算 `$0.10`，新增 `--prefix-tokens`）、0 token 写入桶跳过定价与 OpenAI 省略 0 写入桶、`gpt62_instructions_placement` 按独立基线分 `client_session_id`、以及上游超 `MAX_OUTPUT_TOKENS` 时记录告警。
+  - 验收：`.venv/bin/pytest -q` + `.venv/bin/ruff check src tests` + `.venv/bin/mypy src tests`

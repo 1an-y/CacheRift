@@ -116,8 +116,15 @@ def register_parser(
     parser.add_argument(
         "--max-cost-usd",
         type=float,
-        default=0.05,
-        help="Hard cap on worst-case cost in USD (default: 0.05).",
+        default=0.10,
+        help="Hard cap on worst-case cost in USD (default: 0.10).",
+    )
+    parser.add_argument(
+        "--prefix-tokens",
+        type=int,
+        default=None,
+        help="Override shared prefix target in approximate tokens "
+        "(default: auto from capability table, at least 2200).",
     )
     parser.add_argument(
         "--pricing-table",
@@ -162,6 +169,8 @@ def _build_runner(
         raise _ConfigError("--max-requests must be at least 1")
     if args.max_cost_usd <= 0:
         raise _ConfigError("--max-cost-usd must be greater than 0")
+    if args.prefix_tokens is not None and args.prefix_tokens < 1:
+        raise _ConfigError("--prefix-tokens must be at least 1")
     if args.ttl != "5m" and args.dialect != "anthropic_messages":
         raise _ConfigError("--ttl only applies to --dialect anthropic_messages")
 
@@ -181,6 +190,7 @@ def _build_runner(
         ttl=args.ttl,
         budget=budget,
         transport=transport,
+        prefix_tokens=args.prefix_tokens,
     )
     scenarios = None if not args.scenario or "all" in args.scenario else list(args.scenario)
     return runner, scenarios, url
@@ -374,12 +384,15 @@ def run_command(args: argparse.Namespace, *, transport: httpx.BaseTransport | No
                 "stopped_reason": result.stopped_reason,
                 "skipped_scenarios": list(plan.skipped),
                 "unpriced_scenarios": list(plan.unpriced),
+                "warnings": list(result.warnings),
                 "turns": [to_json_safe(diag) for diag in diagnoses],
             }
         )
     else:
         _render_result(plan, result, diagnoses, output_path, budget)
 
+    for warning in result.warnings:
+        sys.stderr.write(f"warning: {warning}\n")
     if result.stopped_reason is not None:
         sys.stderr.write(f"probe stopped early: {result.stopped_reason}\n")
         return EXIT_FAILURE

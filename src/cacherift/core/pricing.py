@@ -86,6 +86,8 @@ def estimate_cost(
     buckets = usage.buckets
     write_cost = 0.0
     for wb in buckets.cache_writes:
+        if wb.tokens == 0:
+            continue
         rate = rule.write_rate_for_tier(wb.tier)
         if rate is None:
             return None

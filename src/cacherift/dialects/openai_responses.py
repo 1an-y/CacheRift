@@ -212,8 +212,11 @@ class OpenAIResponsesAdapter:
         write_tokens = 0
         if details.get("cache_write_tokens") is not None:
             wt = int(details["cache_write_tokens"])
-            writes.append(CacheWriteBucket(tier="default", tokens=wt))
-            write_tokens += wt
+            if wt < 0:
+                return invalid_usage(usage, "negative_cache_write_tokens")
+            if wt > 0:
+                writes.append(CacheWriteBucket(tier="default", tokens=wt))
+                write_tokens += wt
 
         uncached_input = total_input_int - cached_tokens - write_tokens
         return finalize_usage_buckets(

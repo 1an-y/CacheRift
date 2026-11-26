@@ -32,6 +32,7 @@ TESTS_NEEDING_OPTIONAL_DEPENDENCIES = ("test_probe.py", "test_proxy.py")
 CAPTURED_FIXTURES = (
     TESTS / "fixtures" / "captured" / "openai_responses_turns.jsonl",
     TESTS / "fixtures" / "captured" / "anthropic_messages_turns.jsonl",
+    TESTS / "fixtures" / "captured" / "openai_responses_relay_gpt61_hit.jsonl",
 )
 # The registries read these at run time, so a distribution that lacks them is broken.
 REQUIRED_PACKAGE_DATA = (

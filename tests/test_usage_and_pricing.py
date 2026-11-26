@@ -216,3 +216,46 @@ def test_deepseek_hit_and_miss_tokens_are_costed_at_their_own_rates() -> None:
     assert estimate is not None
     assert estimate.estimated_input_cost_usd == pytest.approx(0.000001296)  # 4*0.30 + 16*0.006
     assert estimate.estimated_output_cost_usd == pytest.approx(0.0000108)  # 9*1.20
+
+
+def test_pricing_ignores_zero_token_write_bucket_but_rejects_nonzero_unpriced_write() -> None:
+    table = PricingRegistry.load_default().get_table("default-2026-11")
+    assert table is not None
+    identity = EndpointIdentity(
+        "openai_responses",
+        "openai",
+        "gpt-6.1-sol",
+        "/v1/responses",
+        pricing_table_id="default-2026-11",
+    )
+
+    zero_write = UsageObservation(
+        state=UsageState.COMPLETE,
+        buckets=TokenBuckets(
+            uncached_input=4240,
+            cache_read=0,
+            cache_writes=(CacheWriteBucket("default", 0),),
+            output=5,
+            total_input=4240,
+            reported_hit_ratio=0.0,
+        ),
+        raw_fields=freeze_json({}),
+    )
+    est = estimate_cost(identity, zero_write, table)
+    assert est is not None
+    assert est.estimated_input_cost_usd == pytest.approx(4240 * 2.00 / 1_000_000)
+    assert est.estimated_output_cost_usd == pytest.approx(5 * 10.00 / 1_000_000)
+
+    nonzero_unpriced_write = UsageObservation(
+        state=UsageState.COMPLETE,
+        buckets=TokenBuckets(
+            uncached_input=4140,
+            cache_read=0,
+            cache_writes=(CacheWriteBucket("default", 100),),
+            output=5,
+            total_input=4240,
+            reported_hit_ratio=0.0,
+        ),
+        raw_fields=freeze_json({}),
+    )
+    assert estimate_cost(identity, nonzero_unpriced_write, table) is None

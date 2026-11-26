@@ -6,12 +6,15 @@ from typing import Any, Literal
 import pytest
 
 from cacherift.capabilities.registry import CapabilityRegistry
-from cacherift.cli import main
+from cacherift.cli import DiagnosisSession, main
 from cacherift.core.freeze import freeze_json, thaw_json
 from cacherift.core.models import (
+    CacheWriteBucket,
     CaptureRecord,
+    ChangeKind,
     DisplayRole,
     EndpointIdentity,
+    LineageStatus,
     OffsetSpace,
     TokenBuckets,
     UsageObservation,
@@ -61,6 +64,17 @@ def test_capability_registry_known_vs_unknown_and_provider_decoupling() -> None:
     assert cap_foreign.min_cache_tokens is None
     assert cap_foreign.ttl_seconds_hint is None
     assert cap_foreign.unit_order == ()
+
+    # Anthropic models follow vendor documented minimum cacheable prompt lengths
+    for model, expected_floor in (
+        ("claude-opus-4-6", 4096),
+        ("claude-opus-4-5", 4096),
+        ("claude-haiku-4-5", 4096),
+        ("claude-opus-4-1", 1024),
+        ("claude-sonnet-4-6", 1024),
+    ):
+        cap_ant = reg.lookup("anthropic_messages", "anthropic", model)
+        assert cap_ant.min_cache_tokens == expected_floor
 
 
 def test_openai_responses_units_wire_spans_diagnostics_and_gpt62_order() -> None:
@@ -652,3 +666,98 @@ def test_s4_streamed_usage_never_carries_model_text_into_the_default_report(
     assert MODEL_TEXT not in report
     for leaked in ('"choices"', '"delta"', '"candidates"', '"parts"'):
         assert leaked not in report
+
+
+def test_openai_responses_zero_cache_write_tokens_omitted_and_negative_invalid() -> None:
+    adapter = get_dialect_adapter("openai_responses")
+    identity = EndpointIdentity("openai_responses", "openai", "gpt-6.1-sol", "/v1/responses")
+
+    def rec(details: dict[str, Any], input_tokens: int) -> CaptureRecord:
+        return CaptureRecord(
+            record_id="oai-cw",
+            timestamp=1.0,
+            identity=identity,
+            request_headers=freeze_json({}),
+            captured_body_bytes=None,
+            parsed_body=freeze_json({"model": "gpt-6.1-sol", "input": []}),
+            response_body=freeze_json(
+                {
+                    "id": "resp_cw",
+                    "usage": {
+                        "input_tokens": input_tokens,
+                        "input_tokens_details": details,
+                        "output_tokens": 5,
+                    },
+                }
+            ),
+            response_complete=True,
+        )
+
+    zero_write = adapter.extract_usage(
+        rec(
+            {
+                "cached_tokens": 4096,
+                "cache_write_tokens": 0,
+                "cache_write_tokens_details": {"ttl_30m_tokens": 0, "ttl_12h_tokens": 0},
+            },
+            4259,
+        )
+    )
+    assert zero_write.state is UsageState.COMPLETE
+    assert zero_write.buckets is not None
+    assert zero_write.buckets.cache_writes == ()
+    assert zero_write.buckets.cache_read == 4096
+    assert zero_write.buckets.uncached_input == 163
+
+    negative_write = adapter.extract_usage(
+        rec({"cached_tokens": 0, "cache_write_tokens": -1}, 1000)
+    )
+    assert negative_write.state is UsageState.INVALID
+
+    positive_write = adapter.extract_usage(
+        rec({"cached_tokens": 0, "cache_write_tokens": 500}, 1000)
+    )
+    assert positive_write.state is UsageState.COMPLETE
+    assert positive_write.buckets is not None
+    assert positive_write.buckets.cache_writes == (CacheWriteBucket("default", 500),)
+    assert positive_write.buckets.uncached_input == 500
+
+
+def test_captured_third_party_relay_gpt61_hit_fixture() -> None:
+    fixture = FIXTURES_DIR / "captured" / "openai_responses_relay_gpt61_hit.jsonl"
+    raw_text = fixture.read_text(encoding="utf-8")
+    assert "surplus" not in raw_text.lower()
+    assert "sk-" not in raw_text
+    assert '"safety_identifier":"user-' not in raw_text
+
+    records = load_capture_records(fixture)
+    assert len(records) == 2
+    t1, t2 = DiagnosisSession().diagnose_all(records)
+
+    assert t1.lineage.status is LineageStatus.NO_BASELINE
+    assert t1.usage.state is UsageState.COMPLETE
+    assert t1.usage.buckets is not None
+    assert t1.usage.buckets.cache_writes == ()
+    assert t1.usage.buckets.total_input == 4240
+    assert t1.cost_estimate is not None
+    assert t1.cost_estimate.estimated_input_cost_usd == pytest.approx(4240 * 2.00 / 1_000_000)
+
+    assert t2.lineage.status is LineageStatus.MATCHED
+    assert t2.lineage.match_basis == "history_continuation"
+    assert t2.lineage.parent_record_id == records[0].record_id
+    assert t2.observed_changes
+    assert all(c.change_kind is ChangeKind.NORMAL_APPEND for c in t2.observed_changes)
+    assert all(
+        c.span is not None and c.span.space is OffsetSpace.WIRE_RAW for c in t2.observed_changes
+    )
+    assert t2.usage.state is UsageState.COMPLETE
+    assert t2.usage.buckets is not None
+    assert t2.usage.buckets.cache_read == 4096
+    assert t2.usage.buckets.uncached_input == 163
+    assert t2.usage.buckets.cache_writes == ()
+    assert t2.cost_estimate is not None
+    assert t2.cost_estimate.estimated_input_cost_usd == pytest.approx(
+        (163 * 2.00 + 4096 * 0.10) / 1_000_000
+    )
+
+    assert main(["check", str(fixture)]) == 0

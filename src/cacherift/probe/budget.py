@@ -28,7 +28,7 @@ class ProbeBudget:
     """Hard caps for one probe run; nothing is sent unless ``execute`` is set explicitly."""
 
     max_requests: int = 12
-    max_cost_usd: float = 0.05
+    max_cost_usd: float = 0.10
     execute: bool = False
 
 

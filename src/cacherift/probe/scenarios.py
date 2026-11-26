@@ -27,9 +27,12 @@ SCENARIO_DIALECTS: dict[str, tuple[str, ...]] = {
 
 # Output is capped per request so the output half of the cost bound is exact.
 MAX_OUTPUT_TOKENS = 64
-_TOKEN_TARGET_FLOOR = 1200
-# Headroom for the bytes/4 estimate, not a provider constant.
-_ESTIMATE_MARGIN = 1.2
+_DEFAULT_PREFIX_TOKENS = 2200
+# Margin above capability min_cache_tokens; not a fixed vendor threshold.
+_THRESHOLD_MARGIN = 1.1
+# ASCII English probe prose averages ~4.5-4.8 UTF-8 bytes per BPE token, so 5 bytes per target
+# token avoids undershooting real token counts while heuristic_bytes_div_4 stays conservative.
+_BYTES_PER_TARGET_TOKEN = 5
 
 _Q1 = "Reply with the single word: alpha."
 _Q2 = "Reply with the single word: bravo."
@@ -54,13 +57,17 @@ class ProbeScenario:
 
 
 def _prefix_text(nonce: str, min_bytes: int) -> str:
-    lines = [f"CacheRift probe corpus {nonce}. 以下为确定性占位文本，仅用于前缀缓存探针。"]
+    header = f"CacheRift probe corpus {nonce}. 以下为确定性占位文本，仅用于前缀缓存探针。"
+    lines = [header]
+    byte_count = len(header.encode("utf-8"))
     rule = 0
-    while sum(len(line) for line in lines) < min_bytes:
-        lines.append(
+    while byte_count < min_bytes:
+        line = (
             f"Rule {rule:04d}: keep tool schemas, system text and conversation history "
             "byte-stable across turns so the prompt cache prefix stays valid."
         )
+        lines.append(line)
+        byte_count += 1 + len(line.encode("utf-8"))
         rule += 1
     return "\n".join(lines)
 
@@ -317,16 +324,24 @@ def build_scenarios(
     ttl: str = "5m",
     nonce: str = "probe",
     min_cache_tokens: int | None = None,
+    prefix_tokens: int | None = None,
 ) -> tuple[ProbeScenario, ...]:
     """Build every scenario that applies to ``dialect``, in ``SCENARIO_ORDER``.
 
     The result is fully deterministic for a given ``nonce``; a different nonce per run keeps one
     run from reading the cache written by another.
     """
-    target_tokens = max(_TOKEN_TARGET_FLOOR, math.ceil((min_cache_tokens or 0) * _ESTIMATE_MARGIN))
+    if prefix_tokens is not None:
+        if prefix_tokens < 1:
+            raise ValueError("prefix_tokens must be at least 1")
+        target_tokens = prefix_tokens
+    else:
+        target_tokens = max(
+            _DEFAULT_PREFIX_TOKENS, math.ceil((min_cache_tokens or 0) * _THRESHOLD_MARGIN)
+        )
 
     def prefix(name: str) -> str:
-        return _prefix_text(f"{nonce}:{name}", target_tokens * 4)
+        return _prefix_text(f"{nonce}:{name}", target_tokens * _BYTES_PER_TARGET_TOKEN)
 
     builders: dict[str, Callable[[str, str, str, str], ProbeScenario]] = {
         "baseline_identical_pair": _baseline,

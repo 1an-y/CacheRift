@@ -46,7 +46,7 @@ Prints the plan and its worst-case cost; nothing is sent:
 cacherift probe --dialect openai_responses --base-url https://api.openai.com/v1 --model gpt-6.1-sol
 ```
 
-Send it, with the API key read from `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`), under a hard cap of 12 requests and $0.05:
+Send it, with the API key read from `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`), under a hard cap of 12 requests and $0.10 (use `--prefix-tokens` if an endpoint needs a different prefix size):
 
 ```bash
 cacherift probe --dialect openai_responses --base-url https://api.openai.com/v1 --model gpt-6.1-sol --execute --output probe.jsonl
