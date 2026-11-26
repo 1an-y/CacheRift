@@ -70,7 +70,7 @@ _ROUND2_HEAD_EDIT = {
 
 
 def _identity(
-    model: str = "gpt-6.1",
+    model: str = "gpt-6.1-sol",
     *,
     dialect: str = "openai_responses",
     pricing_table_id: str | None = "default-2026-11",
@@ -278,8 +278,10 @@ def test_worst_case_cost_uses_the_pricing_engine_and_write_tier() -> None:
     table = PricingRegistry.load_default().get_table("default-2026-11")
     assert table is not None
     body = b"x" * 4000  # 1000 estimated tokens at heuristic_bytes_div_4
-    openai_cost = worst_case_cost(_identity("gpt-6.1"), body, table, max_output_tokens=64)
-    assert openai_cost == pytest.approx((1000 * 2.50 + 64 * 10.00) / 1e6)
+    sol_cost = worst_case_cost(_identity("gpt-6.1-sol"), body, table, max_output_tokens=64)
+    astra_cost = worst_case_cost(_identity("gpt-6.2-astra"), body, table, max_output_tokens=64)
+    assert sol_cost == pytest.approx((1000 * 2.00 + 64 * 10.00) / 1e6)
+    assert astra_cost == pytest.approx((1000 * 8.00 + 64 * 40.00) / 1e6)
     sonnet = _identity("claude-sonnet-4-6", dialect="anthropic_messages")
     five_minutes = worst_case_cost(sonnet, body, table, max_output_tokens=64, write_tier="5m")
     one_hour = worst_case_cost(sonnet, body, table, max_output_tokens=64, write_tier="1h")
@@ -497,7 +499,7 @@ class _FakeUpstream:
 def _runner(
     upstream: _FakeUpstream,
     *,
-    model: str = "gpt-6.1",
+    model: str = "gpt-6.1-sol",
     dialect: str = "openai_responses",
     budget: ProbeBudget = DEFAULT_BUDGET,
     ttl: str = "5m",
@@ -744,7 +746,7 @@ def test_p4_request_content_equals_captured_body_bytes(monkeypatch: pytest.Monke
 
 
 def _diagnosed(
-    upstream: _FakeUpstream, monkeypatch: pytest.MonkeyPatch, model: str = "gpt-6.2"
+    upstream: _FakeUpstream, monkeypatch: pytest.MonkeyPatch, model: str = "gpt-6.2-sol"
 ) -> dict[tuple[str, str], TurnDiagnosis]:
     monkeypatch.setenv(TEST_KEY_ENV, TEST_KEY)
     runner = _runner(upstream, model=model)
@@ -764,7 +766,7 @@ def test_probe_records_diagnose_each_scenario_as_designed(monkeypatch: pytest.Mo
     by_step = _diagnosed(_FakeUpstream("openai_responses"), monkeypatch)
     baseline1 = by_step[("baseline_identical_pair", "round1")]
     assert baseline1.lineage.status is LineageStatus.NO_BASELINE
-    assert baseline1.identity.model == "gpt-6.2"
+    assert baseline1.identity.model == "gpt-6.2-sol"
 
     baseline2 = by_step[("baseline_identical_pair", "round2")]
     assert baseline2.lineage.status is LineageStatus.MATCHED
@@ -850,7 +852,7 @@ def _args(*argv: str) -> argparse.Namespace:
     return parser.parse_args(["probe", *argv])
 
 
-def _base_argv(dialect: str = "openai_responses", model: str = "gpt-6.1") -> list[str]:
+def _base_argv(dialect: str = "openai_responses", model: str = "gpt-6.1-sol") -> list[str]:
     return ["--dialect", dialect, "--base-url", "https://upstream.invalid/v1", "--model", model]
 
 

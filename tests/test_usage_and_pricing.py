@@ -123,7 +123,7 @@ def test_pricing_returns_none_without_table_id_or_complete_usage_or_known_model(
     known_id = EndpointIdentity(
         "openai_responses",
         "openai",
-        "gpt-6.1",
+        "gpt-6.1-sol",
         "/v1/responses",
         pricing_table_id="default-2026-11",
     )
@@ -157,15 +157,38 @@ def test_default_table_prices_the_usage_only_dialects_as_their_vendors_list_them
     assert _default_rates(table, "openai", "gpt-4.1") == (2.00, 0.50, 8.00)
     assert _default_rates(table, "openai", "gpt-4.1-mini") == (0.40, 0.10, 1.60)
 
+    assert _default_rates(table, "openai", "gpt-6.1-sol") == (2.00, 0.10, 10.00)
+    assert _default_rates(table, "openai", "gpt-6.2-sol") == (2.00, 0.10, 10.00)
+    assert _default_rates(table, "openai", "gpt-6.2-astra") == (8.00, 0.40, 40.00)
+
+    assert _default_rates(table, "anthropic", "claude-sonnet-4-6") == (3.00, 0.30, 15.00)
+    assert _default_rates(table, "anthropic", "claude-opus-4-6") == (5.00, 0.50, 25.00)
+    assert _default_rates(table, "anthropic", "claude-opus-4-1") == (15.00, 1.50, 75.00)
+    assert _default_rates(table, "anthropic", "claude-haiku-4-5") == (1.00, 0.10, 5.00)
+    opus_46 = table.lookup("anthropic", "claude-opus-4-6")
+    haiku_45 = table.lookup("anthropic", "claude-haiku-4-5")
+    assert opus_46 is not None and dict(opus_46.write_per_1m) == {
+        "default": 6.25,
+        "5m": 6.25,
+        "1h": 10.00,
+    }
+    assert haiku_45 is not None and dict(haiku_45.write_per_1m) == {
+        "default": 1.25,
+        "5m": 1.25,
+        "1h": 2.00,
+    }
+
 
 def test_default_table_leaves_untranscribed_neighbours_unpriced() -> None:
     table = PricingRegistry.load_default().get_table("default-2026-11")
     assert table is not None
 
     # Each has a price of its own on a vendor page, and none of those was transcribed, so none
-    # may borrow a neighbour's rate. deepseek-chat is not on DeepSeek's pricing page at all.
+    # may borrow a neighbour's rate. Bare gpt-6.1/6.2 must not alias Astra onto Sol's rate.
     for provider, model in (
         ("openai", "gpt-4o-mini-transcribe"),
+        ("openai", "gpt-6.1"),
+        ("openai", "gpt-6.2"),
         ("gemini", "gemini-2.5-flash-image"),
         ("deepseek", "deepseek-chat"),
     ):

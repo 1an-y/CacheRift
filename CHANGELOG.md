@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A malformed capture file made `cacherift analyze` end with a traceback. The problem is now reported in one line.
 - A turn whose only change was an edit to its final conversation unit was reported as a broken prefix and got no `unexplained_low_hit` cause, although everything before that unit was byte-identical. The edit is still reported, and a zero cache read on such a turn is now flagged as unexplained as well.
 - The build requirement allowed `setuptools>=68`, but the license declaration in `pyproject.toml` needs setuptools 77. A build that resolved to an older setuptools failed with `invalid pyproject.toml config: project.license`. The requirement is now `setuptools>=77`.
+- Replaced pre-check OpenAI (`gpt-6.1*`, `gpt-6.2*`) and Anthropic (`claude-*-4*`) pricing wildcards in `default_pricing.toml` with exact vendor-verified model rules (`gpt-6.1-sol`, `gpt-6.2-sol`, `gpt-6.2-astra`, `claude-sonnet-4-*`, `claude-opus-4-6`/`4-5` at $5/$25, `claude-opus-4-1`/`4-20250514`, and `claude-haiku-4-5` at $1/$5) so `gpt-6.2-astra` cannot borrow Sol's rate under `probe` budget bounds.
 
 ## [0.1.0] - 2026-11-26
 

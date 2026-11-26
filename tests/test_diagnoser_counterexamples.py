@@ -507,7 +507,7 @@ def test_cli_analyze_default_redaction_json_and_pricing(tmp_path: object, capsys
         "cli-1",
         10.0,
         {
-            "model": "gpt-6.1",
+            "model": "gpt-6.1-sol",
             "instructions": secret_old,
             "input": [{"role": "user", "content": "hi"}],
         },
@@ -516,12 +516,13 @@ def test_cli_analyze_default_redaction_json_and_pricing(tmp_path: object, capsys
         input_tokens=1500,
         output_tokens=50,
         client_session_id="s-cli",
+        model="gpt-6.1-sol",
     )
     r2 = _oai_rec(
         "cli-2",
         20.0,
         {
-            "model": "gpt-6.1",
+            "model": "gpt-6.1-sol",
             "instructions": secret_new,
             "input": [{"role": "user", "content": "hi"}],
         },
@@ -530,6 +531,7 @@ def test_cli_analyze_default_redaction_json_and_pricing(tmp_path: object, capsys
         input_tokens=1500,
         output_tokens=60,
         client_session_id="s-cli",
+        model="gpt-6.1-sol",
     )
     jsonl_path = tmp_path / "cli_test.jsonl"
     jsonl_path.write_text(

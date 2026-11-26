@@ -5,30 +5,36 @@
 pricing_table_id = "default-2026-11"
 source_version = "public-list-prices-2026-11"
 
-# The next two rules predate the check recorded at the bottom of this file. Checked against
-# https://developers.openai.com/api/docs/pricing on 2026-11-26, they match no row there:
-# gpt-6.1-sol and gpt-6.2-sol are listed at 2.00 / 0.10 / 10.00 and gpt-6.2-astra at
-# 8.00 / 0.40 / 40.00 (short context, standard tier), so `gpt-6.2*` also bills Astra at
-# Sol's rate. They are left as they are: correcting them changes frozen test expectations
-# and is a maintainer decision (specs/06-v0.2.1-streaming-usage/plan.md, rule 6).
-
+# OpenAI GPT-6 series, https://developers.openai.com/api/docs/pricing, checked 2026-11-26.
+# Standard tier, <= 272K context (requests > 272K bill at 2x input/cached and 1.5x output).
+# Optional cache write tiers (30m: 2.50 / 10.00; 12h: 5.00 / 20.00) are not emitted by
+# OpenAI Responses usage today and are omitted until confirmed in live captures.
 [[tables.rules]]
 provider = "openai"
-model_pattern = "gpt-6.1*"
-uncached_input_per_1m = 2.50
-cache_read_per_1m = 0.25
+model_pattern = "gpt-6.1-sol"
+uncached_input_per_1m = 2.00
+cache_read_per_1m = 0.10
 output_per_1m = 10.00
 
 [[tables.rules]]
 provider = "openai"
-model_pattern = "gpt-6.2*"
-uncached_input_per_1m = 2.50
-cache_read_per_1m = 0.25
+model_pattern = "gpt-6.2-sol"
+uncached_input_per_1m = 2.00
+cache_read_per_1m = 0.10
 output_per_1m = 10.00
 
+[[tables.rules]]
+provider = "openai"
+model_pattern = "gpt-6.2-astra"
+uncached_input_per_1m = 8.00
+cache_read_per_1m = 0.40
+output_per_1m = 40.00
+
+# Anthropic Claude 4.x, https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-26.
+# Standard tier (US-only inference applies a 1.1x multiplier; Batch API is 50%).
 [[tables.rules]]
 provider = "anthropic"
-model_pattern = "claude-sonnet-4*"
+model_pattern = "claude-sonnet-4-6"
 uncached_input_per_1m = 3.00
 cache_read_per_1m = 0.30
 output_per_1m = 15.00
@@ -39,7 +45,51 @@ default = 3.75
 
 [[tables.rules]]
 provider = "anthropic"
-model_pattern = "claude-opus-4*"
+model_pattern = "claude-sonnet-4-5"
+uncached_input_per_1m = 3.00
+cache_read_per_1m = 0.30
+output_per_1m = 15.00
+[tables.rules.write_per_1m]
+default = 3.75
+"5m" = 3.75
+"1h" = 6.00
+
+[[tables.rules]]
+provider = "anthropic"
+model_pattern = "claude-sonnet-4-20250514"
+uncached_input_per_1m = 3.00
+cache_read_per_1m = 0.30
+output_per_1m = 15.00
+[tables.rules.write_per_1m]
+default = 3.75
+"5m" = 3.75
+"1h" = 6.00
+
+[[tables.rules]]
+provider = "anthropic"
+model_pattern = "claude-opus-4-6"
+uncached_input_per_1m = 5.00
+cache_read_per_1m = 0.50
+output_per_1m = 25.00
+[tables.rules.write_per_1m]
+default = 6.25
+"5m" = 6.25
+"1h" = 10.00
+
+[[tables.rules]]
+provider = "anthropic"
+model_pattern = "claude-opus-4-5"
+uncached_input_per_1m = 5.00
+cache_read_per_1m = 0.50
+output_per_1m = 25.00
+[tables.rules.write_per_1m]
+default = 6.25
+"5m" = 6.25
+"1h" = 10.00
+
+[[tables.rules]]
+provider = "anthropic"
+model_pattern = "claude-opus-4-1"
 uncached_input_per_1m = 15.00
 cache_read_per_1m = 1.50
 output_per_1m = 75.00
@@ -50,14 +100,25 @@ default = 18.75
 
 [[tables.rules]]
 provider = "anthropic"
-model_pattern = "claude-haiku-4*"
-uncached_input_per_1m = 0.80
-cache_read_per_1m = 0.08
-output_per_1m = 4.00
+model_pattern = "claude-opus-4-20250514"
+uncached_input_per_1m = 15.00
+cache_read_per_1m = 1.50
+output_per_1m = 75.00
 [tables.rules.write_per_1m]
-default = 1.00
-"5m" = 1.00
-"1h" = 1.60
+default = 18.75
+"5m" = 18.75
+"1h" = 30.00
+
+[[tables.rules]]
+provider = "anthropic"
+model_pattern = "claude-haiku-4-5"
+uncached_input_per_1m = 1.00
+cache_read_per_1m = 0.10
+output_per_1m = 5.00
+[tables.rules.write_per_1m]
+default = 1.25
+"5m" = 1.25
+"1h" = 2.00
 
 # ----------------------------------------------------------------------------------------
 # The rules below were transcribed from the vendors' public pricing pages; each one names

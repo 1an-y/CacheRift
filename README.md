@@ -43,13 +43,13 @@ cacherift analyze path/to/captures.jsonl --format json --pricing-table default-2
 Prints the plan and its worst-case cost; nothing is sent:
 
 ```bash
-cacherift probe --dialect openai_responses --base-url https://api.openai.com/v1 --model gpt-6.1
+cacherift probe --dialect openai_responses --base-url https://api.openai.com/v1 --model gpt-6.1-sol
 ```
 
 Send it, with the API key read from `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`), under a hard cap of 12 requests and $0.05:
 
 ```bash
-cacherift probe --dialect openai_responses --base-url https://api.openai.com/v1 --model gpt-6.1 --execute --output probe.jsonl
+cacherift probe --dialect openai_responses --base-url https://api.openai.com/v1 --model gpt-6.1-sol --execute --output probe.jsonl
 ```
 
 Scenarios are admitted as whole groups: a scenario whose worst-case cost does not fit the remaining budget is skipped and reported, never cut in half. A model with no pricing rule cannot be probed, because its cost cannot be bounded.
