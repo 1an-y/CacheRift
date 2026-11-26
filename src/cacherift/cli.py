@@ -57,6 +57,7 @@ _SUBCOMMAND_MODULES: tuple[str, ...] = (
     "cacherift.probe.cli",
     "cacherift.proxy.cli",
     "cacherift.check.cli",
+    "cacherift.repair.cli",
 )
 
 
