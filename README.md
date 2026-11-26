@@ -72,7 +72,7 @@ Streamed responses (`text/event-stream`) are parsed for all five dialects. Chat 
 cacherift check session.jsonl --format github
 ```
 
-Exit `0` when no error-level rule is hit, `1` when one is, `2` when the capture or the policy cannot be read. Rules are structural; there is no hit-rate threshold. Settings live in a `[check]` table of `cacherift.toml` or in `[tool.cacherift.check]` of `pyproject.toml`, and only override the rules they name:
+Exit `0` when no error-level rule is hit, `1` when one is, `2` when the capture or the policy cannot be read. Rules look at the shape of the prefix and at the usage report, never at the hit rate. Settings live in a `[check]` table of `cacherift.toml` or in `[tool.cacherift.check]` of `pyproject.toml`, and only override the rules they name:
 
 ```toml
 [check]
@@ -101,6 +101,10 @@ cacherift repair session.jsonl --apply --output repaired.jsonl --audit-out audit
 
 Four rules only: tool key order aligned to the parent turn, tool array order restored with new tools last, static top-level `instructions` moved into a developer message, and stale Anthropic breakpoints removed. Free text is never rewritten. Records with ambiguous lineage, or on targets the capability table does not fully support, are refused and listed.
 
+## Integrating CacheRift
+
+Pointing an agent at the proxy from the OpenAI SDK, the Anthropic SDK, Claude Code or LangChain, gating a GitHub Actions build with `check`, and using the pytest fixture are described in [docs/integrations.md](docs/integrations.md).
+
 ## Installation
 
 ```bash
@@ -116,6 +120,32 @@ pip install 'cacherift[probe]'
 ```bash
 pip install 'cacherift[proxy]'
 ```
+
+### Core-only isolation
+
+`analyze`, `check` and `repair` must keep working in an installation that has neither `httpx` nor `uvicorn`. CI checks this on every pull request and on every push to `main`. To run the same check on your machine, create a fresh virtual environment with Python 3.12 or newer, install only the core package and pytest into it, and run the verification script, all from the repository root:
+
+```bash
+python3 -m venv /tmp/cacherift-core-only
+```
+
+```bash
+/tmp/cacherift-core-only/bin/python -m pip install --upgrade pip
+```
+
+```bash
+/tmp/cacherift-core-only/bin/python -m pip install . pytest
+```
+
+```bash
+/tmp/cacherift-core-only/bin/python scripts/verify_install.py core-only
+```
+
+The script checks that neither `httpx` nor `uvicorn` can be imported, that the help of every command works, that `probe` and `proxy` exit with a one-line install hint, that `analyze`, `check` and `repair` run on the captured fixtures, and that the tests pass without the two packages.
+
+## Changelog
+
+Changes between versions are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

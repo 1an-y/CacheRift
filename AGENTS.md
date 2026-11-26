@@ -14,6 +14,7 @@ Prompt Cache Reliability for AI Agents — **Find the break. Restore the cache.*
 - 静态检查：`.venv/bin/ruff check src tests`
 - 类型检查：`.venv/bin/mypy src tests`
 - CLI 入口：`.venv/bin/cacherift --version`
+- 安装自检：`scripts/verify_install.py`（CI 的核心隔离作业与发布作业运行的就是它）。`plugin-entrypoint` 可在 `.venv` 里直接跑；`core-only` 只能在仅安装核心包的干净环境里跑，做法见 `README.md` 的 Core-only isolation；`distribution <dir>` 检查 `python -m build` 的产物。改动 `cli.py` 的导入或打包配置前先跑对应的一项。
 
 ## 架构与代码硬约束
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,15 @@ def without_optional_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_version_is_printed_without_running_anything(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["--version"]) == 0
     assert capsys.readouterr().out == f"cacherift {__version__}\n"
+
+
+def test_pyproject_version_matches_the_package_version() -> None:
+    # The release workflow refuses to publish a tag that disagrees with either of them.
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject.open("rb") as handle:
+        declared = tomllib.load(handle)["project"]["version"]
+
+    assert declared == __version__
 
 
 def test_no_command_prints_help_and_returns_2(capsys: pytest.CaptureFixture[str]) -> None:
