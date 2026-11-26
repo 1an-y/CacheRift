@@ -117,6 +117,7 @@ def _envelope(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     ttl: str,
+    cache_key: str | None = None,
 ) -> dict[str, Any]:
     if dialect == "anthropic_messages":
         return {
@@ -139,6 +140,8 @@ def _envelope(
     }
     if system is not None:
         body["instructions"] = system
+    if cache_key is not None:
+        body["prompt_cache_key"] = cache_key
     body["input"] = messages
     return body
 
@@ -161,9 +164,16 @@ def _history(dialect: str) -> list[dict[str, Any]]:
     ]
 
 
-def _baseline(dialect: str, model: str, prefix: str, ttl: str) -> ProbeScenario:
+def _baseline(
+    dialect: str, model: str, prefix: str, ttl: str, *, cache_key: str | None = None
+) -> ProbeScenario:
     lookup = _tool(dialect, "lookup_record")
-    shared: dict[str, Any] = {"system": prefix, "tools": [lookup], "ttl": ttl}
+    shared: dict[str, Any] = {
+        "system": prefix,
+        "tools": [lookup],
+        "ttl": ttl,
+        "cache_key": cache_key,
+    }
     round1 = _envelope(dialect, model, messages=[_message(dialect, "user", _Q1)], **shared)
     round2 = _envelope(dialect, model, messages=[_message(dialect, "user", _Q2)], **shared)
     return ProbeScenario(
@@ -344,7 +354,9 @@ def build_scenarios(
         return _prefix_text(f"{nonce}:{name}", target_tokens * _BYTES_PER_TARGET_TOKEN)
 
     builders: dict[str, Callable[[str, str, str, str], ProbeScenario]] = {
-        "baseline_identical_pair": _baseline,
+        "baseline_identical_pair": lambda d, m, p, t: _baseline(
+            d, m, p, t, cache_key=f"{nonce}:baseline_identical_pair"
+        ),
         "wire_vs_key_reorder": _wire_vs_key_reorder,
         "tool_tail_insertion": _tool_tail_insertion,
         "gpt62_instructions_placement": _gpt62_instructions_placement,

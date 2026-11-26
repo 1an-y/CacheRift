@@ -150,6 +150,7 @@ def test_policy_default_severities() -> None:
             "wire_only_diff",
             "ambiguous_lineage",
             "unexplained_low_hit",
+            "response_cache_key_diverged",
         ]
     )
     assert at("ignore") == []
@@ -392,6 +393,57 @@ def test_evaluator_lists_cause_only_rules_once_per_turn() -> None:
         ("unexplained_low_hit", "warning", 2)
     ]
     assert isinstance(report, CheckReport) and report.warnings == report.findings
+
+
+def test_check_reports_response_cache_key_diverged_as_warning_and_respects_override() -> None:
+    def with_resp_key(
+        record_id: str, turn: int, parent: str | None, resp_key: str
+    ) -> CaptureRecord:
+        base = _record(record_id, _body(turn), parent=parent, usage=_usage(cached=0, total=2300))
+        assert base.response_body is not None
+        resp_body = dict(base.response_body)
+        resp_body["prompt_cache_key"] = resp_key
+        return CaptureRecord(
+            record_id=base.record_id,
+            timestamp=base.timestamp,
+            identity=base.identity,
+            request_headers=base.request_headers,
+            captured_body_bytes=base.captured_body_bytes,
+            parsed_body=base.parsed_body,
+            response_id=base.response_id,
+            response_body=freeze_json(resp_body),
+            client_session_id=base.client_session_id,
+            parent_record_id=base.parent_record_id,
+        )
+
+    records = [
+        with_resp_key("t1", 1, None, "uuid-1"),
+        with_resp_key("t2", 2, "t1", "uuid-2"),
+    ]
+    diagnoses = analyze_records(records)
+
+    default_report = evaluate_diagnoses(diagnoses, CheckPolicy.default())
+    assert default_report.errors == ()
+    assert default_report.exit_code == 0
+    assert [(f.rule, f.severity, f.line) for f in default_report.warnings] == [
+        ("response_cache_key_diverged", "warning", 2)
+    ]
+
+    strict_report = evaluate_diagnoses(
+        diagnoses, CheckPolicy.from_mapping({"error": ["response_cache_key_diverged"]})
+    )
+    assert strict_report.exit_code == 1
+    assert [(f.rule, f.severity) for f in strict_report.errors] == [
+        ("response_cache_key_diverged", "error")
+    ]
+
+    ignored_report = evaluate_diagnoses(
+        diagnoses, CheckPolicy.from_mapping({"ignore": ["response_cache_key_diverged"]})
+    )
+    assert ignored_report.exit_code == 0
+    assert [(f.rule, f.severity) for f in ignored_report.ignored] == [
+        ("response_cache_key_diverged", "ignore")
+    ]
 
 
 # --------------------------------------------------------------------------------------

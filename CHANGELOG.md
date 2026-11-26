@@ -35,6 +35,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Multi-root comparison scenarios in `cacherift probe` (`gpt62_instructions_placement`) now isolate each baseline chain into its own `client_session_id`, preventing `dev_round1` from being falsely parented onto `top_round2` during diagnosis and `cacherift check`.
 - `cacherift probe` now warns explicitly (on `stderr` and in JSON `warnings`) when an upstream exceeds `max_output_tokens`, noting that the per-request output envelope did not hold.
 - Updated Anthropic capability rules in `default_capabilities.toml` so `claude-opus-4-6*`, `claude-opus-4-5*`, and `claude-haiku-4-5*` declare their documented `4096`-token minimum cacheable prefix.
+- OpenAI Responses parent/child turns whose responses echo different `prompt_cache_key` values while the request omitted or kept the same key now emit `PROVIDER_REPORTED` `response_cache_key_diverged` (with 16-char SHA-256 fingerprints only, no raw key text) instead of `unexplained_low_hit`, and `cacherift check` includes `response_cache_key_diverged` as a default warning.
+- `cacherift probe`'s `baseline_identical_pair` scenario now attaches a deterministic per-run `prompt_cache_key` (`<nonce>:baseline_identical_pair`) on `openai_responses` so independent single-turn baseline calls route to the same cache bucket on healthy upstreams.
 
 ## [0.1.0] - 2026-11-26
 

@@ -387,6 +387,22 @@ def test_shared_prefix_meets_token_floor_and_is_deterministic() -> None:
     assert all(len(step.body) >= 4500 * 5 for step in custom_large[0].steps)
 
 
+def test_openai_baseline_carries_stable_prompt_cache_key_while_anthropic_omits_it() -> None:
+    openai = build_scenarios("openai_responses", "gpt-6.1-sol", nonce="run-42")
+    baseline = _scenario(openai, "baseline_identical_pair")
+    for step in baseline.steps:
+        assert json.loads(step.body)["prompt_cache_key"] == "run-42:baseline_identical_pair"
+    for scenario in openai:
+        if scenario.name != "baseline_identical_pair":
+            for step in scenario.steps:
+                assert "prompt_cache_key" not in json.loads(step.body)
+
+    anthropic = build_scenarios("anthropic_messages", "claude-sonnet-4-6", nonce="run-42")
+    ant_baseline = _scenario(anthropic, "baseline_identical_pair")
+    for step in ant_baseline.steps:
+        assert "prompt_cache_key" not in json.loads(step.body)
+
+
 def test_anthropic_prefix_carries_cache_control_with_ttl() -> None:
     for ttl in ("5m", "1h"):
         for scenario in build_scenarios("anthropic_messages", "claude-sonnet-4-6", ttl=ttl):
@@ -432,6 +448,7 @@ def _usage_body(
     ok: bool,
     output_tokens: int = 16,
     cache_write_tokens: int | None = None,
+    prompt_cache_key: str | None = None,
 ) -> dict[str, Any]:
     if not ok:
         return {"error": {"type": "invalid_request_error", "message": f"rejected key {echo}"}}
@@ -456,7 +473,7 @@ def _usage_body(
     details: dict[str, Any] = {"cached_tokens": cached}
     if cache_write_tokens is not None:
         details["cache_write_tokens"] = cache_write_tokens
-    return {
+    payload: dict[str, Any] = {
         "id": "resp_probe",
         "object": "response",
         "status": "completed",
@@ -467,6 +484,9 @@ def _usage_body(
             "output_tokens": output_tokens,
         },
     }
+    if prompt_cache_key is not None:
+        payload["prompt_cache_key"] = prompt_cache_key
+    return payload
 
 
 class _FakeUpstream:
@@ -483,6 +503,7 @@ class _FakeUpstream:
         error: Exception | None = None,
         output_tokens: int = 16,
         cache_write_tokens: int | None = None,
+        cache_key_for: Callable[[int], str | None] | None = None,
     ) -> None:
         self.dialect = dialect
         self.usage_for = usage_for or (lambda _n: (0, 2200, 0))
@@ -492,14 +513,17 @@ class _FakeUpstream:
         self.error = error
         self.output_tokens = output_tokens
         self.cache_write_tokens = cache_write_tokens
+        self.cache_key_for = cache_key_for
         self.requests: list[httpx.Request] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         if self.error is not None:
             raise self.error
-        cached, total, writes = self.usage_for(len(self.requests))
+        call_index = len(self.requests)
+        cached, total, writes = self.usage_for(call_index)
         echo = request.headers.get(self.echo_header) if self.echo_header else None
+        prompt_cache_key = self.cache_key_for(call_index) if self.cache_key_for else None
         return httpx.Response(
             self.status,
             json=_usage_body(
@@ -512,6 +536,7 @@ class _FakeUpstream:
                 ok=self.status < 400,
                 output_tokens=self.output_tokens,
                 cache_write_tokens=self.cache_write_tokens,
+                prompt_cache_key=prompt_cache_key,
             ),
         )
 
@@ -936,6 +961,25 @@ def test_p5_zero_hit_baseline_keeps_unexplained_low_hit(
         cause.grade is EvidenceGrade.OBSERVED and "gateway" in cause.code
         for cause in round2.candidate_causes
     )
+
+
+def test_probe_baseline_diverged_echoed_key_reports_provider_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(TEST_KEY_ENV, TEST_KEY)
+    upstream = _FakeUpstream(
+        "openai_responses",
+        usage_for=lambda _n: (0, 2300, 0),
+        cache_key_for=lambda n: f"uuid-{n}",
+    )
+    runner = _runner(upstream, model="gpt-6.1-sol")
+    plan = runner.plan(scenarios=("baseline_identical_pair",))
+    result = runner.execute(plan)
+    _, round2 = DiagnosisSession().diagnose_all(result.records)
+    causes = {c.code: c for c in round2.candidate_causes}
+    assert "response_cache_key_diverged" in causes
+    assert causes["response_cache_key_diverged"].grade is EvidenceGrade.PROVIDER_REPORTED
+    assert "unexplained_low_hit" not in causes
 
 
 def test_upstream_error_stops_the_run_and_keeps_the_record(

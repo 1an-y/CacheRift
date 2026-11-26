@@ -13,12 +13,12 @@
 1. **纯函数评估**：`evaluate_diagnoses(diagnoses, policy) -> CheckReport` 不做任何 I/O，不读取正文片段，只消费 `TurnDiagnosis` 里已有的分级结论。
 2. **规则 ID 命名空间**（三类，互不重名）：
    - 变更类型：`wire_only_diff`、`normal_append`、`mutated_existing`、`deleted_existing`、`reordered_existing`、`compacted_or_truncated`、`inserted_before_tail`、`config_changed`，匹配 `observed_changes[].change_kind`；
-   - 候选原因码：匹配 `candidate_causes[].code`，例如 `non_cacheable_top_level_instructions`、`ambiguous_lineage`、`unexplained_low_hit`、`warm_cache_without_local_baseline`、`partial_prefix_cache_hit`、`possible_ttl_expiry`；
+   - 候选原因码：匹配 `candidate_causes[].code`，例如 `non_cacheable_top_level_instructions`、`ambiguous_lineage`、`unexplained_low_hit`、`response_cache_key_diverged`、`warm_cache_without_local_baseline`、`partial_prefix_cache_hit`、`possible_ttl_expiry`；
    - 特殊规则：`usage_invalid` / `usage_missing` / `usage_incomplete`（`usage.state`）与 `no_baseline`（`lineage.status` 为 `NO_BASELINE`）。
    - 与某个变更类型一一对应的原因码（如 `existing_prefix_mutated`）是**回声码**：不单独产生 finding（同一处变更不报两次），在配置里出现时视为对应变更类型的别名。
 3. **默认策略**：
    - `error`：`mutated_existing`、`reordered_existing`、`deleted_existing`、`inserted_before_tail`、`non_cacheable_top_level_instructions`、`usage_invalid`；
-   - `warning`：`compacted_or_truncated`、`config_changed`、`wire_only_diff`、`ambiguous_lineage`、`unexplained_low_hit`；
+   - `warning`：`compacted_or_truncated`、`config_changed`、`wire_only_diff`、`ambiguous_lineage`、`unexplained_low_hit`、`response_cache_key_diverged`；
    - 其余一律放行，包括 `normal_append`（C2）、`warm_cache_without_local_baseline`（C3）与首轮 `no_baseline`。
    - 末尾会话单元上的 `mutated_existing` 默认同样是 error。它确实不是前缀断裂（见 `specs/02` 第 11 条，零命中时诊断器照样给出 `unexplained_low_hit`），但从该单元起的缓存实实在在丢了。确认这是预期行为的团队，用 `warning = ["mutated_existing"]` 降级，或用 `ignore_paths` 豁免末尾路径。
 4. **策略配置**：从 `cacherift.toml` 的 `[check]` 或 `pyproject.toml` 的 `[tool.cacherift.check]` 读取，或用 `--config <path>` 指定文件。四个键 `error` / `warning` / `ignore` / `ignore_paths`。**配置里点名的规则以配置为准，没点名的沿用默认值**：把一条默认 error 降级只需写一行 `warning = ["<规则>"]`，不会连带清掉其他默认项。同一规则同时被点名到多个列表时，优先级为 `ignore` > `error` > `warning`。出现这四个键之外的键同样报错。未指定 `--config` 时依次查找当前目录的 `cacherift.toml`、`pyproject.toml`，都没有配置表则使用默认策略。

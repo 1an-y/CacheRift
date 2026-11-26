@@ -25,6 +25,7 @@ CAUSE_RULES: frozenset[str] = frozenset(
         "ambiguous_lineage",
         "partial_prefix_cache_hit",
         "unexplained_low_hit",
+        "response_cache_key_diverged",
         "possible_below_min_cache_tokens",
         "possible_provider_routing_or_eviction",
         "possible_gateway_param_forwarding_issue",
@@ -66,6 +67,7 @@ _DEFAULT_WARNING: frozenset[str] = frozenset(
         "wire_only_diff",
         "ambiguous_lineage",
         "unexplained_low_hit",
+        "response_cache_key_diverged",
     }
 )
 _RULE_SETS = ("error", "warning", "ignore")

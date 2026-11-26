@@ -28,7 +28,7 @@
 
 | 场景 | 方言 | 请求 | 步骤（`parent` 为对照基线） |
 |---|---|---|---|
-| `baseline_identical_pair` | 全部 | 2 | `round1` 冷写；`round2`（parent=round1）共享 ≥2200 token 的确定性前缀，仅末尾短问题不同 |
+| `baseline_identical_pair` | 全部 | 2 | `round1` 冷写；`round2`（parent=round1）共享 ≥2200 token 的确定性前缀，仅末尾短问题不同；`openai_responses` 两步均携带 `<nonce>:baseline_identical_pair` 作为固定 `prompt_cache_key`（`anthropic_messages` 无该字段） |
 | `wire_vs_key_reorder` | 全部 | 3 | `base` 规范序列化；`wire_only`（parent=base）仅改空白/缩进与 `\uXXXX` 转义，解析结构逐键相同；`reordered_keys`（parent=base）仅重排 `tools[0]` Schema 键序 |
 | `tool_tail_insertion` | 全部 | 2 | `round1` tools=[T1]；`round2`（parent=round1）在 `$.tools` 末尾追加 T2，历史按轮追加 |
 | `gpt62_instructions_placement` | `openai_responses` | 4 | 顶层 `$.instructions` 一对（`top_round1`、`top_round2`）对照 `$.input[0]` developer 消息一对（`dev_round1`、`dev_round2`），前缀文本相同 |

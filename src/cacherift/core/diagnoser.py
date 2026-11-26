@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
+from cacherift.core.freeze import sha256_hex
 from cacherift.core.models import (
     CandidateCause,
     CapabilityInfo,
@@ -59,6 +60,36 @@ def _is_tail_only_edit(
             return False
         tail_edits += 1
     return tail_edits > 0
+
+
+def _response_cache_key(record: CaptureRecord | None) -> str | None:
+    """Echoed ``prompt_cache_key`` on an OpenAI Responses turn, including SSE final frame."""
+    if record is None or record.identity.dialect != "openai_responses":
+        return None
+    body = record.response_body
+    if not isinstance(body, Mapping):
+        return None
+    direct = body.get("prompt_cache_key")
+    if isinstance(direct, str) and direct:
+        return direct
+    events = body.get("events")
+    if isinstance(events, Sequence) and not isinstance(events, (str, bytes)):
+        for event in reversed(events):
+            if isinstance(event, Mapping) and event.get("type") == "response.completed":
+                resp = event.get("response")
+                if isinstance(resp, Mapping):
+                    nested = resp.get("prompt_cache_key")
+                    if isinstance(nested, str) and nested:
+                        return nested
+    return None
+
+
+def _request_cache_key(record: CaptureRecord | None) -> str | None:
+    """Client-supplied ``prompt_cache_key`` on the request body, if any."""
+    if record is None or not isinstance(record.parsed_body, Mapping):
+        return None
+    key = record.parsed_body.get("prompt_cache_key")
+    return key if isinstance(key, str) and key else None
 
 
 def _append_observed_change_causes(
@@ -179,6 +210,38 @@ def diagnose_turn(
 
     _append_observed_change_causes(observed_changes, causes)
 
+    response_cache_key_diverged = False
+    if lineage.status is LineageStatus.MATCHED and parent_record is not None:
+        parent_resp_key = _response_cache_key(parent_record)
+        curr_resp_key = _response_cache_key(record)
+        parent_req_key = _request_cache_key(parent_record)
+        curr_req_key = _request_cache_key(record)
+        if (
+            parent_resp_key is not None
+            and curr_resp_key is not None
+            and parent_resp_key != curr_resp_key
+            and parent_req_key == curr_req_key
+        ):
+            response_cache_key_diverged = True
+            req_state = "omitted" if curr_req_key is None else "same"
+            causes.append(
+                CandidateCause(
+                    code="response_cache_key_diverged",
+                    grade=EvidenceGrade.PROVIDER_REPORTED,
+                    summary=(
+                        "Upstream response echoed a different prompt_cache_key than its parent "
+                        f"turn while the request prompt_cache_key stayed {req_state}."
+                    ),
+                    supporting_evidence=(
+                        "parent_response_cache_key_sha256="
+                        f"{sha256_hex(parent_resp_key.encode('utf-8'))[:16]}",
+                        "curr_response_cache_key_sha256="
+                        f"{sha256_hex(curr_resp_key.encode('utf-8'))[:16]}",
+                        f"request_prompt_cache_key={req_state}",
+                    ),
+                )
+            )
+
     has_breaking_change = any(c.change_kind in _BREAKING_CHANGE_KINDS for c in observed_changes)
     tail_only_edit = _is_tail_only_edit(observed_changes, current_units)
 
@@ -208,6 +271,7 @@ def diagnose_turn(
             buckets.cache_read == 0
             and lineage.status is LineageStatus.MATCHED
             and (not has_breaking_change or tail_only_edit)
+            and not response_cache_key_diverged
         ):
             parent_zero = (
                 parent_usage is not None

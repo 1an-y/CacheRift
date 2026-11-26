@@ -574,3 +574,214 @@ def test_cli_analyze_default_redaction_json_and_pricing(tmp_path: object, capsys
     snippet_json = capsys.readouterr().out  # type: ignore[attr-defined]
     assert secret_old in snippet_json
     assert secret_new in snippet_json
+
+
+def test_response_cache_key_diverged_replaces_unexplained_low_hit_without_leaking_key() -> None:
+    from cacherift.cli import DiagnosisSession
+
+    def oai_with_resp(
+        record_id: str,
+        ts: float,
+        body: Mapping[str, Any],
+        resp_body: Mapping[str, Any],
+        *,
+        parent_id: str | None = None,
+    ) -> CaptureRecord:
+        return CaptureRecord(
+            record_id=record_id,
+            timestamp=ts,
+            identity=EndpointIdentity("openai_responses", "openai", "gpt-6.1-sol", "/v1/responses"),
+            request_headers=freeze_json({}),
+            captured_body_bytes=None,
+            parsed_body=freeze_json(body),
+            response_id=f"resp_{record_id}",
+            response_body=freeze_json(resp_body),
+            response_complete=True,
+            client_session_id="s-key-div",
+            parent_record_id=parent_id,
+        )
+
+    def usage_obj(cached: int = 0) -> dict[str, Any]:
+        return {
+            "input_tokens": 2300,
+            "input_tokens_details": {"cached_tokens": cached},
+            "output_tokens": 5,
+        }
+
+    # Case A: omitted request key + tail edit -> diverged echoed key replaces unexplained
+    _, da = DiagnosisSession().diagnose_all(
+        [
+            oai_with_resp(
+                "a1",
+                10.0,
+                {
+                    "model": "gpt-6.1-sol",
+                    "instructions": "S" * 10000,
+                    "input": [{"role": "user", "content": "alpha"}],
+                },
+                {
+                    "id": "resp_a1",
+                    "prompt_cache_key": "secret-auto-key-1111",
+                    "usage": usage_obj(0),
+                },
+            ),
+            oai_with_resp(
+                "a2",
+                20.0,
+                {
+                    "model": "gpt-6.1-sol",
+                    "instructions": "S" * 10000,
+                    "input": [{"role": "user", "content": "bravo"}],
+                },
+                {
+                    "id": "resp_a2",
+                    "prompt_cache_key": "secret-auto-key-2222",
+                    "usage": usage_obj(0),
+                },
+                parent_id="a1",
+            ),
+        ]
+    )
+    codes_a = {c.code: c for c in da.candidate_causes}
+    assert "response_cache_key_diverged" in codes_a
+    div_a = codes_a["response_cache_key_diverged"]
+    assert div_a.grade is EvidenceGrade.PROVIDER_REPORTED
+    assert "request_prompt_cache_key=omitted" in div_a.supporting_evidence
+    assert "unexplained_low_hit" not in codes_a
+    assert "possible_provider_routing_or_eviction" not in codes_a
+    assert "possible_gateway_param_forwarding_issue" not in codes_a
+    assert da.unresolved == ()
+    rendered_a = " ".join(
+        [c.summary for c in da.candidate_causes]
+        + [ev for c in da.candidate_causes for ev in c.supporting_evidence]
+    )
+    assert "secret-auto-key-1111" not in rendered_a
+    assert "secret-auto-key-2222" not in rendered_a
+
+    # Case B: identical explicit request key + SSE response.completed echoing different keys
+    _, db = DiagnosisSession().diagnose_all(
+        [
+            oai_with_resp(
+                "b1",
+                10.0,
+                {
+                    "model": "gpt-6.1-sol",
+                    "instructions": "S" * 10000,
+                    "prompt_cache_key": "shared-k",
+                    "input": [{"role": "user", "content": "q1"}],
+                },
+                {
+                    "events": [
+                        {
+                            "type": "response.completed",
+                            "response": {
+                                "id": "resp_b1",
+                                "prompt_cache_key": "uuid-sse-a",
+                                "usage": usage_obj(0),
+                            },
+                        }
+                    ]
+                },
+            ),
+            oai_with_resp(
+                "b2",
+                20.0,
+                {
+                    "model": "gpt-6.1-sol",
+                    "instructions": "S" * 10000,
+                    "prompt_cache_key": "shared-k",
+                    "input": [
+                        {"role": "user", "content": "q1"},
+                        {"role": "assistant", "content": "a1"},
+                        {"role": "user", "content": "q2"},
+                    ],
+                },
+                {
+                    "events": [
+                        {
+                            "type": "response.completed",
+                            "response": {
+                                "id": "resp_b2",
+                                "prompt_cache_key": "uuid-sse-b",
+                                "usage": usage_obj(0),
+                            },
+                        }
+                    ]
+                },
+                parent_id="b1",
+            ),
+        ]
+    )
+    codes_b = {c.code: c for c in db.candidate_causes}
+    assert "response_cache_key_diverged" in codes_b
+    div_b = codes_b["response_cache_key_diverged"]
+    assert div_b.grade is EvidenceGrade.PROVIDER_REPORTED
+    assert "request_prompt_cache_key=same" in div_b.supporting_evidence
+    assert "unexplained_low_hit" not in codes_b
+    assert db.unresolved == ()
+
+    # Case C: client changed request prompt_cache_key -> CONFIG_CHANGED, no duplicate cause
+    _, dc = DiagnosisSession().diagnose_all(
+        [
+            oai_with_resp(
+                "c1",
+                10.0,
+                {
+                    "model": "gpt-6.1-sol",
+                    "instructions": "S" * 10000,
+                    "prompt_cache_key": "k1",
+                    "input": [{"role": "user", "content": "q1"}],
+                },
+                {"id": "resp_c1", "prompt_cache_key": "k1", "usage": usage_obj(0)},
+            ),
+            oai_with_resp(
+                "c2",
+                20.0,
+                {
+                    "model": "gpt-6.1-sol",
+                    "instructions": "S" * 10000,
+                    "prompt_cache_key": "k2",
+                    "input": [{"role": "user", "content": "q1"}],
+                },
+                {"id": "resp_c2", "prompt_cache_key": "k2", "usage": usage_obj(0)},
+                parent_id="c1",
+            ),
+        ]
+    )
+    codes_c = {c.code for c in dc.candidate_causes}
+    assert "cache_config_changed" in codes_c
+    assert "response_cache_key_diverged" not in codes_c
+
+    # Case D: matching echoed keys with zero hit still keeps C8/P5 unexplained_low_hit
+    _, dd = DiagnosisSession().diagnose_all(
+        [
+            oai_with_resp(
+                "d1",
+                10.0,
+                {
+                    "model": "gpt-6.1-sol",
+                    "instructions": "S" * 10000,
+                    "input": [{"role": "user", "content": "q1"}],
+                },
+                {"id": "resp_d1", "prompt_cache_key": "uuid-same", "usage": usage_obj(0)},
+            ),
+            oai_with_resp(
+                "d2",
+                20.0,
+                {
+                    "model": "gpt-6.1-sol",
+                    "instructions": "S" * 10000,
+                    "input": [
+                        {"role": "user", "content": "q1"},
+                        {"role": "assistant", "content": "a1"},
+                        {"role": "user", "content": "q2"},
+                    ],
+                },
+                {"id": "resp_d2", "prompt_cache_key": "uuid-same", "usage": usage_obj(0)},
+                parent_id="d1",
+            ),
+        ]
+    )
+    codes_d = {c.code for c in dd.candidate_causes}
+    assert "response_cache_key_diverged" not in codes_d
+    assert "unexplained_low_hit" in codes_d
