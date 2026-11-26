@@ -64,7 +64,7 @@ cacherift proxy --upstream https://api.openai.com --output session.jsonl --live
 
 Point the agent's base URL at `http://127.0.0.1:8787/v1`. Request bodies pass through byte for byte and are recorded as received. An optional `x-cacherift-session-id` header groups requests into a session; without it, lineage is resolved from the traffic itself.
 
-Streamed responses are parsed for OpenAI Responses and Anthropic Messages. For the three usage-only dialects (Chat Completions, DeepSeek, Gemini) a stream is forwarded and captured in full, but its usage is not extracted. `--live` keeps diagnosis state in memory, which grows with the traffic captured; for a long-running proxy, leave it off and run `cacherift analyze` on the capture file afterwards.
+Streamed responses (`text/event-stream`) are parsed for all five dialects. Chat Completions, DeepSeek and Gemini usage is taken from the last frame that carries it and never summed across frames; Anthropic usage is the final snapshot (`message_start` merged with the last `message_delta`); OpenAI Responses usage comes from the `response.completed` frame. Two shapes are not parsed: a Gemini `streamGenerateContent` call made without `alt=sse` answers with a JSON array, and a Gemini stream that closes early cannot be told from one that ended. A Chat Completions stream only contains usage when the client sets `stream_options.include_usage`; without it the turn is reported as missing usage, not as zero. `--live` keeps diagnosis state in memory, which grows with the traffic captured; for a long-running proxy, leave it off and run `cacherift analyze` on the capture file afterwards.
 
 ### `check`: gate a build
 

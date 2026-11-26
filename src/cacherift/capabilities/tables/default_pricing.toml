@@ -5,6 +5,13 @@
 pricing_table_id = "default-2026-11"
 source_version = "public-list-prices-2026-11"
 
+# The next two rules predate the check recorded at the bottom of this file. Checked against
+# https://developers.openai.com/api/docs/pricing on 2026-11-26, they match no row there:
+# gpt-6.1-sol and gpt-6.2-sol are listed at 2.00 / 0.10 / 10.00 and gpt-6.2-astra at
+# 8.00 / 0.40 / 40.00 (short context, standard tier), so `gpt-6.2*` also bills Astra at
+# Sol's rate. They are left as they are: correcting them changes frozen test expectations
+# and is a maintainer decision (specs/06-v0.2.1-streaming-usage/plan.md, rule 6).
+
 [[tables.rules]]
 provider = "openai"
 model_pattern = "gpt-6.1*"
@@ -51,3 +58,114 @@ output_per_1m = 4.00
 default = 1.00
 "5m" = 1.00
 "1h" = 1.60
+
+# ----------------------------------------------------------------------------------------
+# The rules below were transcribed from the vendors' public pricing pages; each one names
+# its source and check date. They use exact model names on purpose. Each page also lists
+# differently priced products that share a prefix (gpt-4o-mini-transcribe,
+# gemini-2.5-flash-image, ...), and a prefix pattern would lend those a neighbour's rate: a
+# name that is not listed stays unpriced instead. Every rule is the standard service tier
+# with text input; a tier one rate cannot express is spelled out above the rule.
+# ----------------------------------------------------------------------------------------
+
+# DeepSeek, https://api-docs.deepseek.com/quick_start/pricing, checked 2026-11-26. PEAK rates; off-peak rates are half of these. Peak hours
+# are 01:00-04:00 and 06:00-10:00 UTC, Monday through Friday, excluding Chinese public
+# holidays.
+[[tables.rules]]
+provider = "deepseek"
+model_pattern = "deepseek-flash"
+uncached_input_per_1m = 0.3
+cache_read_per_1m = 0.006
+output_per_1m = 1.2
+
+# DeepSeek, https://api-docs.deepseek.com/quick_start/pricing, checked 2026-11-26. PEAK rates. A retired name that is still
+# accepted, served by the Flash model and billed at the Flash price.
+[[tables.rules]]
+provider = "deepseek"
+model_pattern = "deepseek-v4-flash"
+uncached_input_per_1m = 0.3
+cache_read_per_1m = 0.006
+output_per_1m = 1.2
+
+# DeepSeek, https://api-docs.deepseek.com/quick_start/pricing, checked 2026-11-26. PEAK rates. A retired name that is still
+# accepted, served by the Flash model and billed at the Flash price.
+[[tables.rules]]
+provider = "deepseek"
+model_pattern = "deepseek-v4-flash-vision-exp"
+uncached_input_per_1m = 0.3
+cache_read_per_1m = 0.006
+output_per_1m = 1.2
+
+# DeepSeek, https://api-docs.deepseek.com/quick_start/pricing, checked 2026-11-26. PEAK rates. The page lists no deepseek-chat or
+# deepseek-reasoner, so those two names stay unpriced.
+[[tables.rules]]
+provider = "deepseek"
+model_pattern = "deepseek-v4-pro"
+uncached_input_per_1m = 1.32
+cache_read_per_1m = 0.044
+output_per_1m = 3.96
+
+# Gemini, https://aistudio.google.com/docs/pricing, checked 2026-11-26. Standard tier, text / image / video input. Prompts
+# > 200k tokens: input 2.50, context caching 0.25, output 15.00. Storage of an
+# explicit context cache is billed per token per hour and is not represented.
+# Deprecated by the vendor: from 2026-12-01 requests route to gemini-3.8-flash and
+# are billed at that model's rates, which are not transcribed here.
+[[tables.rules]]
+provider = "gemini"
+model_pattern = "gemini-2.5-pro"
+uncached_input_per_1m = 1.25
+cache_read_per_1m = 0.125
+output_per_1m = 10.00
+
+# Gemini, https://aistudio.google.com/docs/pricing, checked 2026-11-26. Standard tier, text / image / video input; audio
+# input is 1.00, audio context caching 0.10. Deprecated by the vendor: from
+# 2026-12-01 requests route to gemini-3.5-flash-lite and are billed at that model's
+# rates, which are not transcribed here.
+[[tables.rules]]
+provider = "gemini"
+model_pattern = "gemini-2.5-flash"
+uncached_input_per_1m = 0.30
+cache_read_per_1m = 0.03
+output_per_1m = 2.50
+
+# Gemini, https://aistudio.google.com/docs/pricing, checked 2026-11-26. Standard tier, text / image / video input; audio
+# input is 0.30, audio context caching 0.03.
+[[tables.rules]]
+provider = "gemini"
+model_pattern = "gemini-2.5-flash-lite"
+uncached_input_per_1m = 0.10
+cache_read_per_1m = 0.01
+output_per_1m = 0.40
+
+# OpenAI, https://developers.openai.com/api/docs/pricing, checked 2026-11-26. Standard tier. Dated snapshots such as
+# gpt-4o-2024-08-06 are not listed individually and stay unpriced.
+[[tables.rules]]
+provider = "openai"
+model_pattern = "gpt-4o"
+uncached_input_per_1m = 2.50
+cache_read_per_1m = 1.25
+output_per_1m = 10.00
+
+# OpenAI, https://developers.openai.com/api/docs/pricing, checked 2026-11-26. Standard tier.
+[[tables.rules]]
+provider = "openai"
+model_pattern = "gpt-4o-mini"
+uncached_input_per_1m = 0.15
+cache_read_per_1m = 0.075
+output_per_1m = 0.60
+
+# OpenAI, https://developers.openai.com/api/docs/pricing, checked 2026-11-26. Standard tier.
+[[tables.rules]]
+provider = "openai"
+model_pattern = "gpt-4.1"
+uncached_input_per_1m = 2.00
+cache_read_per_1m = 0.50
+output_per_1m = 8.00
+
+# OpenAI, https://developers.openai.com/api/docs/pricing, checked 2026-11-26. Standard tier.
+[[tables.rules]]
+provider = "openai"
+model_pattern = "gpt-4.1-mini"
+uncached_input_per_1m = 0.40
+cache_read_per_1m = 0.10
+output_per_1m = 1.60

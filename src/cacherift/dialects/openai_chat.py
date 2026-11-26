@@ -18,11 +18,13 @@ from cacherift.core.models import (
 from cacherift.dialects.base import (
     compute_wire_spans,
     finalize_usage_buckets,
+    find_usage,
     incomplete_usage,
     invalid_usage,
     make_ordered_unit,
     missing_usage,
     unique_tool_unit_id,
+    usage_missing,
 )
 
 
@@ -103,11 +105,10 @@ class OpenAIChatAdapter:
     def extract_usage(self, record: CaptureRecord) -> UsageObservation:
         if not record.response_complete:
             return missing_usage(record, "response_incomplete_or_interrupted")
-        body = record.response_body
-        if not isinstance(body, Mapping) or not isinstance(body.get("usage"), Mapping):
-            return missing_usage(record, "missing_usage")
+        usage = find_usage(record, "usage")
+        if usage is None:
+            return usage_missing(record, "missing_usage")
 
-        usage = body["usage"]
         prompt_tokens = usage.get("prompt_tokens")
         completion_tokens = usage.get("completion_tokens")
         details = usage.get("prompt_tokens_details")

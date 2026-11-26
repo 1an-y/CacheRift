@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Protocol
 
 from cacherift.core.freeze import canonical_project_bytes, freeze_json, sha256_hex
@@ -159,6 +159,56 @@ def finalize_usage_buckets(
         raw_fields=frozen_raw,
         notes=notes,
     )
+
+
+def _stream_events(record: CaptureRecord) -> Sequence[Any] | None:
+    """The captured SSE events when the response was captured as a stream, else None."""
+    body = record.response_body
+    events = body.get("events") if isinstance(body, Mapping) else None
+    if isinstance(events, Sequence) and not isinstance(events, (str, bytes)):
+        return events
+    return None
+
+
+def is_streamed(record: CaptureRecord) -> bool:
+    """True when the response was captured as a list of SSE events rather than one JSON body."""
+    return _stream_events(record) is not None
+
+
+def find_usage(record: CaptureRecord, key: str, *aliases: str) -> Mapping[str, Any] | None:
+    """The usage object of a response, streamed or not; None when the response has none.
+
+    A stream repeats cumulative snapshots, so only the last frame carrying an object under
+    ``key`` (or one of ``aliases``) counts: earlier frames must never be added up. Frames whose
+    value is null or not an object, and non-JSON frames such as the ``[DONE]`` sentinel, are
+    skipped.
+    """
+    body = record.response_body
+    if not isinstance(body, Mapping):
+        return None
+    events = _stream_events(record)
+    frames: Iterable[Mapping[str, Any]] = (
+        [event for event in reversed(events) if isinstance(event, Mapping)]
+        if events is not None
+        else [body]
+    )
+    for frame in frames:
+        for name in (key, *aliases):
+            value = frame.get(name)
+            if isinstance(value, Mapping):
+                return value
+    return None
+
+
+def usage_missing(record: CaptureRecord, note: str) -> UsageObservation:
+    """MISSING for a response that carries no usage object.
+
+    A stream says so in its own words: the usual cause there is a client that never asked for
+    usage frames, which is a different fact from a response body that left the usage out.
+    """
+    if is_streamed(record):
+        return missing_usage(record, "missing_usage_in_stream")
+    return missing_usage(record, note)
 
 
 def missing_usage(record: CaptureRecord, note: str) -> UsageObservation:

@@ -15,9 +15,15 @@ import httpx
 import pytest
 import uvicorn
 
-from cacherift.cli import DiagnosisSession, main
+from cacherift.cli import DiagnosisSession, analyze_records, main
 from cacherift.core.freeze import freeze_json
-from cacherift.core.models import CaptureRecord, EndpointIdentity, TurnDiagnosis, UsageState
+from cacherift.core.models import (
+    CaptureRecord,
+    EndpointIdentity,
+    TokenBuckets,
+    TurnDiagnosis,
+    UsageState,
+)
 from cacherift.dialects.base import get_dialect_adapter
 from cacherift.io.capture import load_capture_records
 from cacherift.proxy import cli as proxy_cli
@@ -29,6 +35,21 @@ from cacherift.proxy.app import (
 )
 from cacherift.proxy.recorder import CaptureRecorder
 from cacherift.proxy.sse import SSEAccumulator
+from stream_fixtures import (
+    CHAT,
+    CHAT_DONE,
+    CHAT_FINAL_USAGE,
+    DEEPSEEK,
+    DEEPSEEK_FINAL_USAGE,
+    GEMINI,
+    MODEL_TEXT,
+    chat_chunk,
+    chat_final,
+    data_frames,
+    deepseek_chunk,
+    gemini_frame,
+    gemini_meta,
+)
 
 _SSE_HEADERS = {"content-type": "text/event-stream"}
 _GEMINI_USAGE = {
@@ -859,6 +880,100 @@ def test_gemini_streams_end_with_the_connection_rather_than_a_terminal_frame(
 
     (record,) = harness.records()
     assert record.response_complete is True
+
+
+# --------------------------------------------------------------------------------------
+# v0.2.1 S5: streamed usage of the usage-only dialects survives the proxy (specs/06)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("upstream_url", "path", "request_body", "payloads", "identity", "expected"),
+    [
+        pytest.param(
+            "https://api.openai.com",
+            "/v1/chat/completions",
+            b'{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}',
+            [chat_chunk("hel"), chat_chunk(MODEL_TEXT), chat_final(CHAT_FINAL_USAGE), CHAT_DONE],
+            CHAT,
+            TokenBuckets(
+                uncached_input=36,
+                cache_read=64,
+                cache_writes=(),
+                output=7,
+                total_input=100,
+                reported_hit_ratio=0.64,
+            ),
+            id="chat-completions",
+        ),
+        pytest.param(
+            "https://api.deepseek.com",
+            "/chat/completions",
+            b'{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}',
+            [
+                deepseek_chunk(
+                    "hel", {**DEEPSEEK_FINAL_USAGE, "completion_tokens": 3, "total_tokens": 23}
+                ),
+                deepseek_chunk(MODEL_TEXT, DEEPSEEK_FINAL_USAGE),
+                CHAT_DONE,
+            ],
+            DEEPSEEK,
+            TokenBuckets(
+                uncached_input=4,
+                cache_read=16,
+                cache_writes=(),
+                output=9,
+                total_input=20,
+                reported_hit_ratio=0.8,
+            ),
+            id="deepseek",
+        ),
+        pytest.param(
+            "https://generativelanguage.googleapis.com",
+            "/v1beta/models/gemini-2.5-pro:streamGenerateContent",
+            b'{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}',
+            [
+                gemini_frame("hel", gemini_meta(10)),
+                gemini_frame(MODEL_TEXT, gemini_meta(25)),
+                gemini_frame("lo", gemini_meta(42)),
+            ],
+            GEMINI,
+            TokenBuckets(
+                uncached_input=100,
+                cache_read=200,
+                cache_writes=(),
+                output=42,
+                total_input=300,
+                reported_hit_ratio=200 / 300,
+            ),
+            id="gemini",
+        ),
+    ],
+)
+def test_s5_streamed_usage_survives_the_proxy(
+    tmp_path: Path,
+    upstream_url: str,
+    path: str,
+    request_body: bytes,
+    payloads: list[Any],
+    identity: EndpointIdentity,
+    expected: TokenBuckets,
+) -> None:
+    async def stream(upstream_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers=_SSE_HEADERS, content=_chunks(data_frames(*payloads)))
+
+    harness = _Harness(tmp_path, _Upstream(stream), upstream_url=upstream_url)
+
+    response = harness.post(path, content=request_body)
+    (record,) = harness.records()
+    (diagnosis,) = analyze_records([record])
+
+    assert response.status_code == 200
+    assert record.identity.dialect == identity.dialect
+    assert record.identity.model == identity.model
+    assert record.response_complete is True
+    assert diagnosis.usage.state is UsageState.COMPLETE
+    assert diagnosis.usage.buckets == expected
 
 
 # --------------------------------------------------------------------------------------

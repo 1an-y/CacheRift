@@ -1,18 +1,42 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Literal
+
+import pytest
 
 from cacherift.capabilities.registry import CapabilityRegistry
-from cacherift.core.freeze import freeze_json
+from cacherift.cli import main
+from cacherift.core.freeze import freeze_json, thaw_json
 from cacherift.core.models import (
     CaptureRecord,
     DisplayRole,
     EndpointIdentity,
     OffsetSpace,
+    TokenBuckets,
+    UsageObservation,
     UsageState,
 )
 from cacherift.dialects.base import get_dialect_adapter
-from cacherift.io.capture import load_capture_records
+from cacherift.io.capture import dump_capture_record, load_capture_records
+from stream_fixtures import (
+    CHAT,
+    CHAT_DONE,
+    CHAT_ERROR,
+    CHAT_FINAL_USAGE,
+    DEEPSEEK,
+    DEEPSEEK_FINAL_USAGE,
+    GEMINI,
+    GEMINI_ERROR,
+    MODEL_TEXT,
+    capture,
+    chat_chunk,
+    chat_final,
+    data_frames,
+    deepseek_chunk,
+    gemini_frame,
+    gemini_meta,
+)
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -256,3 +280,375 @@ def test_partial_usage_only_dialects() -> None:
     assert gem_usage.buckets is not None
     assert gem_usage.buckets.cache_read == 200
     assert gem_usage.buckets.uncached_input == 100
+
+
+# --------------------------------------------------------------------------------------
+# v0.2.1: streamed usage for the usage-only dialects (specs/06, gates S1-S4)
+# --------------------------------------------------------------------------------------
+
+CHAT_WITHOUT_DETAILS: dict[str, Any] = {"prompt_tokens": 100, "completion_tokens": 7}
+CHAT_CACHED_ABOVE_PROMPT: dict[str, Any] = {
+    "prompt_tokens": 10,
+    "completion_tokens": 7,
+    "prompt_tokens_details": {"cached_tokens": 64},
+}
+DEEPSEEK_WITHOUT_CACHE_COUNTS: dict[str, Any] = {"prompt_tokens": 20, "completion_tokens": 9}
+DEEPSEEK_TOTALS_DISAGREE: dict[str, Any] = {**DEEPSEEK_FINAL_USAGE, "prompt_tokens": 21}
+GEMINI_WITHOUT_CACHED_COUNT: dict[str, Any] = {
+    "promptTokenCount": 300,
+    "candidatesTokenCount": 42,
+}
+GEMINI_CACHED_ABOVE_PROMPT: dict[str, Any] = {
+    "promptTokenCount": 100,
+    "cachedContentTokenCount": 200,
+    "candidatesTokenCount": 42,
+}
+
+# How a stream ends: with its sentinel, before the sentinel, or with an error frame.
+Ending = Literal["done", "cut", "error"]
+
+
+def _chat_stream(
+    usage: dict[str, Any] | None,
+    ending: Ending = "done",
+    *,
+    with_usage_key: bool = True,
+) -> bytes:
+    """A Chat Completions stream with model text in its content chunks."""
+    chunks = [
+        chat_chunk("hel", with_usage_key=with_usage_key),
+        chat_chunk(MODEL_TEXT, with_usage_key=with_usage_key),
+    ]
+    tail = [chat_final(usage)] if usage is not None else []
+    if ending == "cut":
+        return data_frames(*chunks, *tail)
+    if ending == "error":
+        return data_frames(*chunks, *tail, CHAT_ERROR, CHAT_DONE)
+    return data_frames(*chunks, *tail, CHAT_DONE)
+
+
+def _deepseek_stream(*usages: dict[str, Any] | None, ending: Ending = "done") -> bytes:
+    """A DeepSeek stream with one content chunk per usage object; None leaves usage out."""
+    texts = ["hel", MODEL_TEXT]
+    assert 0 < len(usages) <= len(texts)
+    chunks = [deepseek_chunk(text, usage) for text, usage in zip(texts, usages, strict=False)]
+    if ending == "cut":
+        return data_frames(*chunks)
+    if ending == "error":
+        return data_frames(*chunks, CHAT_ERROR, CHAT_DONE)
+    return data_frames(*chunks, CHAT_DONE)
+
+
+def _gemini_stream(meta: dict[str, Any] | None, ending: Ending = "done") -> bytes:
+    """A Gemini stream; it has no sentinel, so it ends when the connection ends."""
+    frames = [gemini_frame("hel", meta), gemini_frame(MODEL_TEXT, meta)]
+    if ending == "cut":  # the connection closed before the second frame
+        return data_frames(frames[0])
+    if ending == "error":
+        return data_frames(*frames, GEMINI_ERROR)
+    return data_frames(*frames)
+
+
+def _usage(identity: EndpointIdentity, stream: bytes) -> UsageObservation:
+    """What the dialect's adapter makes of ``stream`` once the proxy has captured it."""
+    return get_dialect_adapter(identity.dialect).extract_usage(capture(identity, stream))
+
+
+def test_s1_chat_completions_stream_reports_the_usage_of_the_last_frame() -> None:
+    usage = _usage(CHAT, _chat_stream(CHAT_FINAL_USAGE))
+
+    assert usage.state is UsageState.COMPLETE
+    assert usage.buckets == TokenBuckets(
+        uncached_input=36,
+        cache_read=64,
+        cache_writes=(),
+        output=7,
+        total_input=100,
+        reported_hit_ratio=0.64,
+    )
+    assert dict(usage.raw_fields) == CHAT_FINAL_USAGE
+
+
+def test_s1_chat_completions_stream_without_a_usage_frame_is_missing_and_carries_no_text(
+) -> None:
+    # The client never set stream_options.include_usage, so no chunk mentions usage at all.
+    usage = _usage(CHAT, _chat_stream(None, with_usage_key=False))
+
+    assert usage.state is UsageState.MISSING
+    assert usage.buckets is None
+    assert usage.notes == ("missing_usage_in_stream",)
+    assert dict(usage.raw_fields) == {}
+
+
+@pytest.mark.parametrize(
+    ("final", "state", "note"),
+    [
+        pytest.param(
+            CHAT_WITHOUT_DETAILS,
+            UsageState.INCOMPLETE,
+            "missing_prompt_tokens_details_cached_tokens",
+            id="without-cached-tokens",
+        ),
+        pytest.param(
+            CHAT_CACHED_ABOVE_PROMPT,
+            UsageState.INVALID,
+            "cached_tokens_exceeds_prompt_tokens",
+            id="cached-above-prompt",
+        ),
+    ],
+)
+def test_s1_chat_completions_stream_keeps_the_non_streamed_verdicts(
+    final: dict[str, Any], state: UsageState, note: str
+) -> None:
+    usage = _usage(CHAT, _chat_stream(final))
+
+    assert usage.state is state
+    assert usage.buckets is None
+    assert usage.notes == (note,)
+    assert dict(usage.raw_fields) == final  # the usage object, never the model output
+
+
+@pytest.mark.parametrize("ending", ["cut", "error"])
+def test_s1_chat_completions_stream_that_did_not_end_cleanly_is_missing(ending: Ending) -> None:
+    stream = _chat_stream(CHAT_FINAL_USAGE, ending)
+
+    assert capture(CHAT, stream).response_complete is False  # the proxy's own verdict
+    usage = _usage(CHAT, stream)
+    assert usage.state is UsageState.MISSING
+    assert usage.buckets is None
+    assert usage.notes == ("response_incomplete_or_interrupted",)
+
+
+def test_s2_deepseek_stream_reports_the_last_cumulative_usage_not_their_sum() -> None:
+    earlier = {**DEEPSEEK_FINAL_USAGE, "completion_tokens": 3, "total_tokens": 23}
+    usage = _usage(DEEPSEEK, _deepseek_stream(earlier, DEEPSEEK_FINAL_USAGE))
+
+    assert usage.state is UsageState.COMPLETE
+    assert usage.buckets == TokenBuckets(
+        uncached_input=4,
+        cache_read=16,
+        cache_writes=(),
+        output=9,  # never 3 + 9
+        total_input=20,
+        reported_hit_ratio=0.8,
+    )
+    assert dict(usage.raw_fields) == DEEPSEEK_FINAL_USAGE
+
+
+def test_s2_deepseek_stream_whose_prompt_total_disagrees_with_its_parts_is_invalid() -> None:
+    usage = _usage(DEEPSEEK, _deepseek_stream(DEEPSEEK_TOTALS_DISAGREE))  # 16 + 4 is not 21
+
+    assert usage.state is UsageState.INVALID
+    assert usage.buckets is None
+    assert usage.notes == ("prompt_tokens_mismatch_hit_plus_miss",)
+    assert dict(usage.raw_fields) == DEEPSEEK_TOTALS_DISAGREE
+
+
+def test_s2_deepseek_stream_without_cache_counts_is_incomplete() -> None:
+    usage = _usage(DEEPSEEK, _deepseek_stream(DEEPSEEK_WITHOUT_CACHE_COUNTS))
+
+    assert usage.state is UsageState.INCOMPLETE
+    assert usage.buckets is None
+    assert usage.notes == ("missing_deepseek_cache_hit_or_miss_tokens",)
+    assert dict(usage.raw_fields) == DEEPSEEK_WITHOUT_CACHE_COUNTS
+
+
+def test_s2_deepseek_stream_without_usage_is_missing() -> None:
+    usage = _usage(DEEPSEEK, _deepseek_stream(None, None))
+
+    assert usage.state is UsageState.MISSING
+    assert usage.buckets is None
+    assert usage.notes == ("missing_usage_in_stream",)
+    assert dict(usage.raw_fields) == {}
+
+
+@pytest.mark.parametrize("ending", ["cut", "error"])
+def test_s2_deepseek_stream_that_did_not_end_cleanly_is_missing(ending: Ending) -> None:
+    stream = _deepseek_stream(DEEPSEEK_FINAL_USAGE, DEEPSEEK_FINAL_USAGE, ending=ending)
+
+    assert capture(DEEPSEEK, stream).response_complete is False  # the proxy's own verdict
+    usage = _usage(DEEPSEEK, stream)
+    assert usage.state is UsageState.MISSING
+    assert usage.buckets is None
+    assert usage.notes == ("response_incomplete_or_interrupted",)
+
+
+def _gemini_frames() -> list[dict[str, Any]]:
+    """Three chunks whose usage snapshot grows: 10, then 25, then 42 output tokens."""
+    return [
+        gemini_frame("hel", gemini_meta(10)),
+        gemini_frame(MODEL_TEXT, gemini_meta(25)),
+        gemini_frame("lo", gemini_meta(42)),
+    ]
+
+
+def test_s3_gemini_stream_keeps_only_the_last_cumulative_snapshot() -> None:
+    usage = _usage(GEMINI, data_frames(*_gemini_frames()))
+
+    assert usage.state is UsageState.COMPLETE
+    assert usage.buckets == TokenBuckets(
+        uncached_input=100,
+        cache_read=200,
+        cache_writes=(),
+        output=42,  # never 10 + 25 + 42
+        total_input=300,
+        reported_hit_ratio=200 / 300,
+    )
+    assert dict(usage.raw_fields) == gemini_meta(42)
+
+
+@pytest.mark.parametrize(
+    ("meta", "state", "note"),
+    [
+        pytest.param(
+            GEMINI_WITHOUT_CACHED_COUNT,
+            UsageState.INCOMPLETE,
+            "incomplete_gemini_usageMetadata",
+            id="without-cached-count",
+        ),
+        pytest.param(
+            GEMINI_CACHED_ABOVE_PROMPT,
+            UsageState.INVALID,
+            "cachedContentTokenCount_exceeds_promptTokenCount",
+            id="cached-above-prompt",
+        ),
+    ],
+)
+def test_s3_gemini_stream_keeps_the_non_streamed_verdicts(
+    meta: dict[str, Any], state: UsageState, note: str
+) -> None:
+    usage = _usage(GEMINI, _gemini_stream(meta))
+
+    assert usage.state is state
+    assert usage.buckets is None
+    assert usage.notes == (note,)
+    assert dict(usage.raw_fields) == meta
+
+
+def test_s3_gemini_stream_without_usage_is_missing() -> None:
+    usage = _usage(GEMINI, _gemini_stream(None))
+
+    assert usage.state is UsageState.MISSING
+    assert usage.buckets is None
+    assert usage.notes == ("missing_usage_in_stream",)
+    assert dict(usage.raw_fields) == {}
+
+
+def test_s3_gemini_stream_that_ends_in_an_error_frame_is_missing() -> None:
+    stream = _gemini_stream(gemini_meta(42), ending="error")
+
+    assert capture(GEMINI, stream).response_complete is False  # the proxy's own verdict
+    usage = _usage(GEMINI, stream)
+    assert usage.state is UsageState.MISSING
+    assert usage.buckets is None
+    assert usage.notes == ("response_incomplete_or_interrupted",)
+
+
+def test_s3_gemini_stream_that_merely_stops_passes_as_finished() -> None:
+    # A known limit, pinned so that changing it is a deliberate act: a Gemini stream has no
+    # terminal frame, so a connection that closes early looks exactly like one that ended.
+    stream = _gemini_stream(gemini_meta(42), ending="cut")
+
+    record = capture(GEMINI, stream)
+    assert record.response_complete is True
+    # the record deep-freezes its response, so compare a thawed copy
+    assert thaw_json(record.response_body)["events"] == [gemini_frame("hel", gemini_meta(42))]
+
+
+def test_s3_gemini_usage_metadata_accepts_the_snake_case_alias() -> None:
+    frame = gemini_frame("hel", None)
+    frame["usage_metadata"] = gemini_meta(42)
+    usage = _usage(GEMINI, data_frames(frame))
+
+    assert usage.state is UsageState.COMPLETE
+    assert usage.buckets is not None and usage.buckets.output == 42
+
+
+def test_s3_gemini_usage_metadata_skips_a_value_that_is_not_an_object() -> None:
+    # Deliberately not v0.1 behaviour: v0.1 took the first truthy value and gave up when it
+    # was not an object. The alias behind it is still evidence, so it is used.
+    frame = gemini_frame("hel", None)
+    frame["usageMetadata"] = 5
+    frame["usage_metadata"] = gemini_meta(42)
+    usage = _usage(GEMINI, data_frames(frame))
+
+    assert usage.state is UsageState.COMPLETE
+    assert usage.buckets is not None and usage.buckets.output == 42
+
+
+# One stream per dialect and usage state, interrupted streams included. Every one of them
+# carries model output that no default report may contain.
+_S4_CASES = [
+    pytest.param(
+        CHAT,
+        _chat_stream(None, with_usage_key=False),
+        UsageState.MISSING,
+        id="chat-missing",
+    ),
+    pytest.param(
+        CHAT, _chat_stream(CHAT_WITHOUT_DETAILS), UsageState.INCOMPLETE, id="chat-incomplete"
+    ),
+    pytest.param(
+        CHAT, _chat_stream(CHAT_CACHED_ABOVE_PROMPT), UsageState.INVALID, id="chat-invalid"
+    ),
+    pytest.param(
+        CHAT, _chat_stream(CHAT_FINAL_USAGE, "cut"), UsageState.MISSING, id="chat-interrupted"
+    ),
+    pytest.param(DEEPSEEK, _deepseek_stream(None, None), UsageState.MISSING, id="deepseek-missing"),
+    pytest.param(
+        DEEPSEEK,
+        _deepseek_stream(DEEPSEEK_WITHOUT_CACHE_COUNTS),
+        UsageState.INCOMPLETE,
+        id="deepseek-incomplete",
+    ),
+    pytest.param(
+        DEEPSEEK,
+        _deepseek_stream(DEEPSEEK_TOTALS_DISAGREE),
+        UsageState.INVALID,
+        id="deepseek-invalid",
+    ),
+    pytest.param(
+        DEEPSEEK,
+        _deepseek_stream(DEEPSEEK_FINAL_USAGE, DEEPSEEK_FINAL_USAGE, ending="error"),
+        UsageState.MISSING,
+        id="deepseek-error-frame",
+    ),
+    pytest.param(GEMINI, _gemini_stream(None), UsageState.MISSING, id="gemini-missing"),
+    pytest.param(
+        GEMINI,
+        _gemini_stream(GEMINI_WITHOUT_CACHED_COUNT),
+        UsageState.INCOMPLETE,
+        id="gemini-incomplete",
+    ),
+    pytest.param(
+        GEMINI, _gemini_stream(GEMINI_CACHED_ABOVE_PROMPT), UsageState.INVALID, id="gemini-invalid"
+    ),
+    pytest.param(
+        GEMINI,
+        _gemini_stream(gemini_meta(42), ending="error"),
+        UsageState.MISSING,
+        id="gemini-error-frame",
+    ),
+]
+
+@pytest.mark.parametrize(("identity", "stream", "state"), _S4_CASES)
+def test_s4_streamed_usage_never_carries_model_text_into_the_default_report(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    identity: EndpointIdentity,
+    stream: bytes,
+    state: UsageState,
+) -> None:
+    record = capture(identity, stream)
+    capture_path = tmp_path / "capture.jsonl"
+    capture_path.write_text(dump_capture_record(record) + "\n", encoding="utf-8")
+    adapter = get_dialect_adapter(identity.dialect)
+    assert adapter.extract_usage(record).state is state  # the case really is in that state
+
+    capsys.readouterr()
+    assert main(["analyze", str(capture_path), "--format", "json"]) == 0
+
+    report = capsys.readouterr().out
+    assert MODEL_TEXT not in report
+    for leaked in ('"choices"', '"delta"', '"candidates"', '"parts"'):
+        assert leaked not in report

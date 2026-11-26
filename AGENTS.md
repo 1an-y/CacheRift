@@ -4,7 +4,7 @@ Prompt Cache Reliability for AI Agents — **Find the break. Restore the cache.*
 
 ## 开发工作流（SDD 强制顺序）
 
-1. 动手改代码前，必须先读取 `specs/00-constitution.md` 与所要改动的迭代目录（`specs/<NN>-*/`）下的 `spec.md`、`plan.md`、`tasks.md`。内核与 `analyze` 在 `01`；四个外围命令分别在 `02`（probe）、`03`（proxy）、`04`（check）、`05`（repair）。
+1. 动手改代码前，必须先读取 `specs/00-constitution.md` 与所要改动的迭代目录（`specs/<NN>-*/`）下的 `spec.md`、`plan.md`、`tasks.md`。内核与 `analyze` 在 `01`；四个外围命令分别在 `02`（probe）、`03`（proxy）、`04`（check）、`05`（repair）；方言适配器的流式用量与价表核对在 `06`。
 2. 每次只推进 `tasks.md` 中的一个任务切片：先补齐或核对失败测试（Red），再写最小实现至全绿（Green），通过验收命令后勾选任务项。
 3. 若发现协议细节与 `spec.md` 冲突，停止修改断言，汇报冲突点并先更新规范；严禁弱化测试来凑绿灯。
 

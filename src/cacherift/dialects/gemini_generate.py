@@ -18,10 +18,13 @@ from cacherift.core.models import (
 from cacherift.dialects.base import (
     compute_wire_spans,
     finalize_usage_buckets,
+    find_usage,
     incomplete_usage,
     invalid_usage,
+    is_streamed,
     make_ordered_unit,
     missing_usage,
+    usage_missing,
 )
 
 
@@ -107,12 +110,11 @@ class GeminiGenerateAdapter:
     def extract_usage(self, record: CaptureRecord) -> UsageObservation:
         if not record.response_complete:
             return missing_usage(record, "response_incomplete_or_interrupted")
-        body = record.response_body
-        if not isinstance(body, Mapping):
-            return missing_usage(record, "missing_response_body")
-        meta = body.get("usageMetadata") or body.get("usage_metadata")
-        if not isinstance(meta, Mapping):
-            return missing_usage(record, "missing_usageMetadata")
+        meta = find_usage(record, "usageMetadata", "usage_metadata")
+        if meta is None:
+            if not is_streamed(record) and not isinstance(record.response_body, Mapping):
+                return missing_usage(record, "missing_response_body")
+            return usage_missing(record, "missing_usageMetadata")
 
         prompt = meta.get("promptTokenCount")
         cached = meta.get("cachedContentTokenCount")

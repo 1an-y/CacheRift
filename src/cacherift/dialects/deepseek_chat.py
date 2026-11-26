@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-
 from cacherift.core.models import CaptureRecord, ProviderDiagnostics, UsageObservation
 from cacherift.dialects.base import (
     finalize_usage_buckets,
+    find_usage,
     incomplete_usage,
     invalid_usage,
     missing_usage,
+    usage_missing,
 )
 from cacherift.dialects.openai_chat import OpenAIChatAdapter
 
@@ -20,11 +20,10 @@ class DeepSeekChatAdapter(OpenAIChatAdapter):
     def extract_usage(self, record: CaptureRecord) -> UsageObservation:
         if not record.response_complete:
             return missing_usage(record, "response_incomplete_or_interrupted")
-        body = record.response_body
-        if not isinstance(body, Mapping) or not isinstance(body.get("usage"), Mapping):
-            return missing_usage(record, "missing_usage")
+        usage = find_usage(record, "usage")
+        if usage is None:
+            return usage_missing(record, "missing_usage")
 
-        usage = body["usage"]
         hit = usage.get("prompt_cache_hit_tokens")
         miss = usage.get("prompt_cache_miss_tokens")
         completion = usage.get("completion_tokens")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from cacherift.capabilities.registry import PricingRegistry
 from cacherift.core.freeze import freeze_json
 from cacherift.core.models import (
@@ -126,3 +128,68 @@ def test_pricing_returns_none_without_table_id_or_complete_usage_or_known_model(
         pricing_table_id="default-2026-11",
     )
     assert estimate_cost(known_id, usage_missing, table) is None
+
+
+def _default_rates(table: PricingTable, provider: str, model: str) -> tuple[float, float, float]:
+    rule = table.lookup(provider, model)
+    assert rule is not None, f"{provider}/{model} is not priced"
+    return (rule.uncached_input_per_1m, rule.cache_read_per_1m, rule.output_per_1m)
+
+
+def test_default_table_prices_the_usage_only_dialects_as_their_vendors_list_them() -> None:
+    # Literals transcribed from the vendors' pricing pages; the sources and check dates sit in
+    # comments next to each rule in default_pricing.toml.
+    table = PricingRegistry.load_default().get_table("default-2026-11")
+    assert table is not None
+
+    deepseek_flash = (0.3, 0.006, 1.2)  # peak rates; off-peak is half
+    assert _default_rates(table, "deepseek", "deepseek-flash") == deepseek_flash
+    assert _default_rates(table, "deepseek", "deepseek-v4-flash") == deepseek_flash
+    assert _default_rates(table, "deepseek", "deepseek-v4-flash-vision-exp") == deepseek_flash
+    assert _default_rates(table, "deepseek", "deepseek-v4-pro") == (1.32, 0.044, 3.96)
+
+    assert _default_rates(table, "gemini", "gemini-2.5-pro") == (1.25, 0.125, 10.00)
+    assert _default_rates(table, "gemini", "gemini-2.5-flash") == (0.30, 0.03, 2.50)
+    assert _default_rates(table, "gemini", "gemini-2.5-flash-lite") == (0.10, 0.01, 0.40)
+
+    assert _default_rates(table, "openai", "gpt-4o") == (2.50, 1.25, 10.00)
+    assert _default_rates(table, "openai", "gpt-4o-mini") == (0.15, 0.075, 0.60)
+    assert _default_rates(table, "openai", "gpt-4.1") == (2.00, 0.50, 8.00)
+    assert _default_rates(table, "openai", "gpt-4.1-mini") == (0.40, 0.10, 1.60)
+
+
+def test_default_table_leaves_untranscribed_neighbours_unpriced() -> None:
+    table = PricingRegistry.load_default().get_table("default-2026-11")
+    assert table is not None
+
+    # Each has a price of its own on a vendor page, and none of those was transcribed, so none
+    # may borrow a neighbour's rate. deepseek-chat is not on DeepSeek's pricing page at all.
+    for provider, model in (
+        ("openai", "gpt-4o-mini-transcribe"),
+        ("gemini", "gemini-2.5-flash-image"),
+        ("deepseek", "deepseek-chat"),
+    ):
+        assert table.lookup(provider, model) is None, f"{provider}/{model}"
+
+
+def test_deepseek_hit_and_miss_tokens_are_costed_at_their_own_rates() -> None:
+    table = PricingRegistry.load_default().get_table("default-2026-11")
+    assert table is not None
+    identity = EndpointIdentity(
+        "deepseek_chat",
+        "deepseek",
+        "deepseek-flash",
+        "/chat/completions",
+        pricing_table_id="default-2026-11",
+    )
+    usage = UsageObservation(
+        state=UsageState.COMPLETE,
+        buckets=TokenBuckets(4, 16, (), 9, 20, 0.8),
+        raw_fields=freeze_json({}),
+    )
+
+    estimate = estimate_cost(identity, usage, table)
+
+    assert estimate is not None
+    assert estimate.estimated_input_cost_usd == pytest.approx(0.000001296)  # 4*0.30 + 16*0.006
+    assert estimate.estimated_output_cost_usd == pytest.approx(0.0000108)  # 9*1.20

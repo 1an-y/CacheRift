@@ -25,7 +25,7 @@
    - `response_complete` 仅当「上游流正常结束」且「到达终点」且「未见错误帧」时为真。
    - 流中途中断或缺少终止帧：`response_complete=False`，方言适配器报 `UsageState.MISSING`，不补零（对齐 C6）。
    - 中断发生在响应已开始之后时，代理中止与客户端的连接（客户端读到截断的流），而不是补一个正常的结尾去冒充完整响应。
-   - 适用范围：从事件里提取用量由方言适配器完成，只有 `openai_responses` 与 `anthropic_messages` 的适配器读取 `events`。三个 `usage_only` 方言（Chat Completions、DeepSeek、Gemini）的 v0.1 适配器只从非流式响应体里读取用量：它们的流式请求会被完整转发、完整抓取，`response_complete` 也如实记录，但用量记为 `MISSING`。这是 v0.1 适配器的既有限制，补齐需要先更新方言规范。
+   - 适用范围：从事件里提取用量由方言适配器完成。`openai_responses` 与 `anthropic_messages` 的适配器自 v0.1 起读取 `events`；三个 `usage_only` 方言（Chat Completions、DeepSeek、Gemini）的流式用量在 `specs/06-v0.2.1-streaming-usage/spec.md` 补齐：只取末帧最终快照，`response_complete=False` 即 `MISSING`，任何状态都不带正文。Chat Completions 只在客户端开启 `stream_options.include_usage` 时才带用量帧，否则用量如实记为 `MISSING`，不补零。只有 `text/event-stream` 响应会被解析成事件：Gemini 的 `streamGenerateContent` 不带 `alt=sse` 时返回的是 JSON 数组，按普通响应体处理，记为不完整。
 6. **失败路径**：上游连不上或响应头未到就出错 → 返回 `502` 与一个不含上游细节的 JSON 错误体，记录一条 `response_complete=False` 的捕获。
    - 客户端在请求体**上传中途**断开 → 不转发任何内容，也不落盘（不存在一条完整的请求）。
    - 客户端在请求体上传完成之后的任意时刻断开——包括上游还在生成响应头的时候——代理立即取消上游请求并关闭上游流（不让上游继续生成），记录为不完整。为此，对断开的监听从请求体读完就开始，而不是等上游响应头到达之后。
